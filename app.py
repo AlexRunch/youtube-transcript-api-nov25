@@ -87,23 +87,30 @@ def get_available_languages(video_id):
         languages = []
 
         # Вручную созданные субтитры
-        if hasattr(transcript_list, 'manually_created_transcripts'):
-            for transcript in transcript_list.manually_created_transcripts:
-                languages.append({
-                    "code": transcript.language_code,
-                    "name": transcript.language,
-                    "isAuto": False
-                })
+        if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+            try:
+                for transcript in transcript_list.manually_created_transcripts:
+                    languages.append({
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "isAuto": False
+                    })
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
 
         # Автоматически сгенерированные субтитры
-        if hasattr(transcript_list, 'automatically_generated_transcripts'):
-            for transcript in transcript_list.automatically_generated_transcripts:
-                languages.append({
-                    "code": transcript.language_code,
-                    "name": transcript.language,
-                    "isAuto": True
-                })
+        if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+            try:
+                for transcript in transcript_list.automatically_generated_transcripts:
+                    languages.append({
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "isAuto": True
+                    })
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при обработке автоматических субтитров: {str(e)}")
 
+        logger.info(f"✅ Найдено {len(languages)} языков для видео {video_id}")
         return languages
     except Exception as e:
         logger.error(f"❌ Ошибка при получении языков для {video_id}: {str(e)}")
@@ -181,27 +188,23 @@ def get_subtitles():
             # Пытаемся получить субтитры на запрашиваемом языке
             transcript = None
 
-            # Сначала пробуем вручную созданные субтитры
+            # Пробуем найти субтитры на запрашиваемом языке
             try:
                 transcript = transcript_list.find_transcript([language])
-                logger.info(f"✅ Найдены вручную созданные субтитры: {language}")
+                logger.info(f"✅ Найдены субтитры на {language}")
             except NoTranscriptFound:
-                # Если не найдены, пробуем автоматические
+                logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный")
+                # Если запрашиваемый язык не найден, берем первый доступный
                 try:
-                    transcript = transcript_list.find_transcript([language])
-                    logger.info(f"✅ Найдены автоматические субтитры: {language}")
-                except NoTranscriptFound:
-                    logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный")
-                    # Берем первый доступный язык
-                    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
-                        transcript = transcript_list.manually_created_transcripts[0]
-                    elif hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
-                        transcript = transcript_list.automatically_generated_transcripts[0]
-                    else:
-                        return jsonify({
-                            "success": False,
-                            "error": "No transcripts available for this video"
-                        }), 404
+                    # find_transcript с пустым списком должен вернуть первый доступный
+                    transcript = transcript_list.find_transcript([])
+                    logger.info(f"✅ Используем первый доступный язык")
+                except (NoTranscriptFound, Exception) as e:
+                    logger.error(f"❌ Не удалось найти ни один доступный язык: {str(e)}")
+                    return jsonify({
+                        "success": False,
+                        "error": "No transcripts available for this video"
+                    }), 404
 
             # Получаем субтитры (с переводом если нужен)
             if translate_to and translate_to != language:
