@@ -87,20 +87,22 @@ def get_available_languages(video_id):
         languages = []
 
         # Вручную созданные субтитры
-        for transcript in transcript_list.manually_created_transcripts:
-            languages.append({
-                "code": transcript.language_code,
-                "name": transcript.language,
-                "isAuto": False
-            })
+        if hasattr(transcript_list, 'manually_created_transcripts'):
+            for transcript in transcript_list.manually_created_transcripts:
+                languages.append({
+                    "code": transcript.language_code,
+                    "name": transcript.language,
+                    "isAuto": False
+                })
 
         # Автоматически сгенерированные субтитры
-        for transcript in transcript_list.automatically_generated_transcripts:
-            languages.append({
-                "code": transcript.language_code,
-                "name": transcript.language,
-                "isAuto": True
-            })
+        if hasattr(transcript_list, 'automatically_generated_transcripts'):
+            for transcript in transcript_list.automatically_generated_transcripts:
+                languages.append({
+                    "code": transcript.language_code,
+                    "name": transcript.language,
+                    "isAuto": True
+                })
 
         return languages
     except Exception as e:
@@ -189,9 +191,9 @@ def get_subtitles():
                 except NoTranscriptFound:
                     logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный")
                     # Берем первый доступный язык
-                    if transcript_list.manually_created_transcripts:
+                    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
                         transcript = transcript_list.manually_created_transcripts[0]
-                    elif transcript_list.automatically_generated_transcripts:
+                    elif hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
                         transcript = transcript_list.automatically_generated_transcripts[0]
                     else:
                         return jsonify({
