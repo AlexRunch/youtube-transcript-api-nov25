@@ -17,6 +17,7 @@ YouTube Subtitles API Backend
 import os
 import json
 import logging
+import traceback
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
@@ -249,6 +250,7 @@ def get_subtitles():
 
         except Exception as e:
             logger.error(f"❌ Ошибка получения субтитров: {str(e)}")
+            logger.error(f"📋 Stack trace: {traceback.format_exc()}")
             return jsonify({
                 "success": False,
                 "error": f"Failed to fetch transcripts: {str(e)}"
@@ -256,6 +258,7 @@ def get_subtitles():
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в /api/subtitles: {str(e)}")
+        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
         return jsonify({
             "success": False,
             "error": "Internal server error"
