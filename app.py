@@ -295,15 +295,33 @@ def get_subtitles():
             except NoTranscriptFound:
                 logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный язык YouTube")
                 # Если запрашиваемый язык не найден, берем первый доступный
-                # find_transcript с пустым списком вернет первый язык из youtube_api.list()
-                # Порядок определяет YouTube API (обычно: язык видео, потом популярные)
+                # Используем список доступных транскриптов чтобы получить первый
                 try:
-                    transcript = transcript_list.find_transcript([])
-                    # Определяем какой язык был выбран
+                    # Пытаемся получить список всех доступных языков
+                    available_transcripts = []
+
+                    # Собираем все доступные трансрипты
+                    if hasattr(transcript_list, 'manually_created_transcripts'):
+                        available_transcripts.extend(transcript_list.manually_created_transcripts or [])
+
+                    if hasattr(transcript_list, 'automatically_generated_transcripts'):
+                        available_transcripts.extend(transcript_list.automatically_generated_transcripts or [])
+
+                    if not available_transcripts:
+                        logger.error(f"❌ Нет ни одного доступного транскрипта для видео")
+                        return jsonify({
+                            "success": False,
+                            "error": "No transcripts available for this video"
+                        }), 404
+
+                    # Берем первый доступный
+                    transcript = available_transcripts[0]
                     actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
                     logger.info(f"✅ Используем первый доступный язык: {actual_language}")
+
                 except (NoTranscriptFound, Exception) as e:
-                    logger.error(f"❌ Не удалось найти ни один доступный язык: {str(e)}")
+                    logger.error(f"❌ Ошибка при выборе fallback языка: {str(e)}")
+                    logger.error(f"📋 Stack trace: {traceback.format_exc()}")
                     return jsonify({
                         "success": False,
                         "error": "No transcripts available for this video"
