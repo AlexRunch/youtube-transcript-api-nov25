@@ -82,10 +82,11 @@ if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
         elif PROXY_CONFIG_AVAILABLE and PROXY_TYPE == "generic":
             # Используем GenericProxyConfig для старых версий или других провайдеров
             # Формат URL: http://username:password@host:port
-            proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@proxy.webshare.io:80"
+            # Webshare может требовать порт 3128 или 80
+            proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@proxy.webshare.io:3128"
             proxy_config = GenericProxyConfig(http_proxy=proxy_url, https_proxy=proxy_url)
             youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            logger.info("✅ YouTube API инициализирован с Webshare прокси (GenericProxyConfig)")
+            logger.info("✅ YouTube API инициализирован с Webshare прокси (GenericProxyConfig на порту 3128)")
         else:
             # Если прокси конфиг не доступен, создаем обычный API
             # Прокси может не быть поддержана в версии 0.6.1-0.6.2
