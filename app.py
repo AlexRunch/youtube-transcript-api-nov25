@@ -123,6 +123,41 @@ else:
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
+def get_first_available_transcript(transcript_list):
+    """
+    Получить первый доступный транскрипт из TranscriptList.
+
+    Новая версия youtube-transcript-api (>= 0.7) не имеет атрибутов
+    manually_created_transcripts и automatically_generated_transcripts.
+
+    Вместо этого мы пытаемся получить первый язык, используя find_transcript,
+    или обращаемся к методам find_generated_transcript и find_manually_created_transcript.
+
+    Возвращает transcript объект или None.
+    """
+    # Старая версия API (если есть атрибуты)
+    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        return transcript_list.manually_created_transcripts[0]
+
+    if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+        return transcript_list.automatically_generated_transcripts[0]
+
+    # Для новой версии API, нам нужно попробовать различные методы
+    # К сожалению, новая версия не предоставляет полный список доступных языков
+    # Но мы можем попробовать несколько популярных языков и вернуть первый найденный
+
+    common_languages = ['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh']
+
+    for lang_code in common_languages:
+        try:
+            return transcript_list.find_transcript([lang_code])
+        except:
+            continue
+
+    # Если ничего не нашли, вернем None
+    return None
+
+
 def format_subtitles(transcript_list):
     """
     Преобразует format youtube-transcript-api в наш формат
@@ -178,7 +213,7 @@ def get_available_languages(video_id):
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
 
-        # Вручную созданные субтитры
+        # Вручную созданные субтитры (старая версия API)
         if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
             try:
                 for transcript in transcript_list.manually_created_transcripts:
@@ -190,7 +225,7 @@ def get_available_languages(video_id):
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
 
-        # Автоматически сгенерированные субтитры
+        # Автоматически сгенерированные субтитры (старая версия API)
         if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
             try:
                 for transcript in transcript_list.automatically_generated_transcripts:
@@ -201,6 +236,22 @@ def get_available_languages(video_id):
                     })
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке автоматических субтитров: {str(e)}")
+
+        # Для новой версии API, если список языков все еще пуст, попробуем найти хотя бы один язык
+        if not languages:
+            logger.info(f"⚠️ Не удалось получить список языков через старый API для {video_id}, попытаемся найти хотя бы один язык")
+            # Попробуем несколько популярных языков
+            common_languages = ['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh']
+            for lang_code in common_languages:
+                try:
+                    transcript = transcript_list.find_transcript([lang_code])
+                    languages.append({
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "isAuto": getattr(transcript, 'is_generated', False)
+                    })
+                except:
+                    continue
 
         logger.info(f"✅ Найдено {len(languages)} языков для видео {video_id}")
         return languages
@@ -295,27 +346,17 @@ def get_subtitles():
             except NoTranscriptFound:
                 logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный язык YouTube")
                 # Если запрашиваемый язык не найден, берем первый доступный
-                # Используем список доступных транскриптов чтобы получить первый
                 try:
-                    # Пытаемся получить список всех доступных языков
-                    available_transcripts = []
+                    # Используем helper функцию для получения первого доступного транскрипта
+                    transcript = get_first_available_transcript(transcript_list)
 
-                    # Собираем все доступные трансрипты
-                    if hasattr(transcript_list, 'manually_created_transcripts'):
-                        available_transcripts.extend(transcript_list.manually_created_transcripts or [])
-
-                    if hasattr(transcript_list, 'automatically_generated_transcripts'):
-                        available_transcripts.extend(transcript_list.automatically_generated_transcripts or [])
-
-                    if not available_transcripts:
+                    if transcript is None:
                         logger.error(f"❌ Нет ни одного доступного транскрипта для видео")
                         return jsonify({
                             "success": False,
                             "error": "No transcripts available for this video"
                         }), 404
 
-                    # Берем первый доступный
-                    transcript = available_transcripts[0]
                     actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
                     logger.info(f"✅ Используем первый доступный язык: {actual_language}")
 
