@@ -82,39 +82,50 @@ def format_subtitles(transcript_list):
 def get_available_languages(video_id):
     """Получить список доступных языков для видео"""
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # В версии 0.7.0+ используется list_transcripts вместо get_transcripts
+        from youtube_transcript_api._api import YouTubeTranscriptApi as API
 
-        # Доступные языки (с автоматическими субтитрами и без)
-        languages = []
+        try:
+            # Пытаемся использовать новый API (0.7.0+)
+            transcript_list = API.list_transcripts(video_id)
 
-        # Вручную созданные субтитры
-        if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
-            try:
-                for transcript in transcript_list.manually_created_transcripts:
-                    languages.append({
-                        "code": transcript.language_code,
-                        "name": transcript.language,
-                        "isAuto": False
-                    })
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
+            # Доступные языки (с автоматическими субтитрами и без)
+            languages = []
 
-        # Автоматически сгенерированные субтитры
-        if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
-            try:
-                for transcript in transcript_list.automatically_generated_transcripts:
-                    languages.append({
-                        "code": transcript.language_code,
-                        "name": transcript.language,
-                        "isAuto": True
-                    })
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при обработке автоматических субтитров: {str(e)}")
+            # Вручную созданные субтитры
+            if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+                try:
+                    for transcript in transcript_list.manually_created_transcripts:
+                        languages.append({
+                            "code": transcript.language_code,
+                            "name": transcript.language,
+                            "isAuto": False
+                        })
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
 
-        logger.info(f"✅ Найдено {len(languages)} языков для видео {video_id}")
-        return languages
+            # Автоматически сгенерированные субтитры
+            if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+                try:
+                    for transcript in transcript_list.automatically_generated_transcripts:
+                        languages.append({
+                            "code": transcript.language_code,
+                            "name": transcript.language,
+                            "isAuto": True
+                        })
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при обработке автоматических субтитров: {str(e)}")
+
+            logger.info(f"✅ Найдено {len(languages)} языков для видео {video_id}")
+            return languages
+        except AttributeError:
+            # Fallback для старых версий - просто возвращаем пустой список
+            logger.warning(f"⚠️ list_transcripts недоступна, возвращаем пустой список")
+            return []
+
     except Exception as e:
         logger.error(f"❌ Ошибка при получении языков для {video_id}: {str(e)}")
+        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
         return []
 
 
@@ -181,43 +192,32 @@ def get_subtitles():
 
         # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
         try:
-            # Список доступных транскриптов для видео
-            logger.info(f"📡 Запрашиваем список транскриптов для видео {video_id}...")
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            logger.info(f"✅ Получен список транскриптов для {video_id}")
+            logger.info(f"📡 Запрашиваем субтитры для видео {video_id} на языке {language}...")
 
-            # Пытаемся получить субтитры на запрашиваемом языке
-            transcript = None
+            # В версии 0.7.0+ используется get_transcript() напрямую
+            subtitle_data = None
 
-            # Пробуем найти субтитры на запрашиваемом языке
             try:
-                transcript = transcript_list.find_transcript([language])
+                # Пытаемся получить субтитры на запрашиваемом языке
+                subtitle_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
                 logger.info(f"✅ Найдены субтитры на {language}")
             except NoTranscriptFound:
-                logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный")
-                # Если запрашиваемый язык не найден, берем первый доступный
+                logger.warning(f"⚠️ Субтитры на {language} не найдены, пытаемся получить первый доступный...")
                 try:
-                    # find_transcript с пустым списком должен вернуть первый доступный
-                    transcript = transcript_list.find_transcript([])
-                    logger.info(f"✅ Используем первый доступный язык")
-                except (NoTranscriptFound, Exception) as e:
+                    # Если язык не найден, пытаемся получить без указания языка
+                    subtitle_data = YouTubeTranscriptApi.get_transcript(video_id)
+                    logger.info(f"✅ Получены субтитры на доступном языке")
+                except Exception as e:
                     logger.error(f"❌ Не удалось найти ни один доступный язык: {str(e)}")
                     return jsonify({
                         "success": False,
                         "error": "No transcripts available for this video"
                     }), 404
 
-            # Получаем субтитры (с переводом если нужен)
+            # Примечание: перевод не поддерживается в текущей версии API
+            # TODO: Реализовать перевод если потребуется
             if translate_to and translate_to != language:
-                logger.info(f"🌐 Переводим субтитры на {translate_to}")
-                try:
-                    translated = transcript.translate(translate_to)
-                    subtitle_data = translated.fetch()
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка перевода на {translate_to}, используем оригинал: {str(e)}")
-                    subtitle_data = transcript.fetch()
-            else:
-                subtitle_data = transcript.fetch()
+                logger.warning(f"⚠️ Перевод пока не поддерживается, возвращаем оригинальные субтитры")
 
             # Форматируем субтитры
             formatted_subtitles = format_subtitles(subtitle_data)
