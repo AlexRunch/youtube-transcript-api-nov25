@@ -69,9 +69,9 @@ WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)
 
 # Инициализируем YouTube API с прокси если доступны credentials
 youtube_api = None
-if WEBSHARE_USERNAME and WEBSHARE_PASSWORD and PROXY_CONFIG_AVAILABLE:
+if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
     try:
-        if PROXY_TYPE == "webshare":
+        if PROXY_CONFIG_AVAILABLE and PROXY_TYPE == "webshare":
             # Используем WebshareProxyConfig если доступна
             proxy_config = WebshareProxyConfig(
                 proxy_username=WEBSHARE_USERNAME,
@@ -79,13 +79,18 @@ if WEBSHARE_USERNAME and WEBSHARE_PASSWORD and PROXY_CONFIG_AVAILABLE:
             )
             youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
             logger.info("✅ YouTube API инициализирован с Webshare прокси (WebshareProxyConfig)")
-        elif PROXY_TYPE == "generic":
+        elif PROXY_CONFIG_AVAILABLE and PROXY_TYPE == "generic":
             # Используем GenericProxyConfig для старых версий или других провайдеров
             # Формат URL: http://username:password@host:port
             proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@proxy.webshare.io:80"
             proxy_config = GenericProxyConfig(http_proxy=proxy_url, https_proxy=proxy_url)
             youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
             logger.info("✅ YouTube API инициализирован с Webshare прокси (GenericProxyConfig)")
+        else:
+            # Если прокси конфиг не доступен, создаем обычный API
+            # Прокси может не быть поддержана в версии 0.6.1-0.6.2
+            logger.warning(f"⚠️ Proxy config не доступна (тип: {PROXY_TYPE}), используем обычный API")
+            youtube_api = YouTubeTranscriptApi()
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации прокси: {str(e)}, используем обычный API")
         logger.error(f"📋 Stack trace: {traceback.format_exc()}")
@@ -94,8 +99,6 @@ else:
     youtube_api = YouTubeTranscriptApi()
     if not WEBSHARE_USERNAME or not WEBSHARE_PASSWORD:
         logger.warning("⚠️ Переменные окружения WEBSHARE_PROXY_USERNAME/PASSWORD не установлены")
-    if not PROXY_CONFIG_AVAILABLE:
-        logger.warning(f"⚠️ Proxy config недоступна в текущей версии youtube-transcript-api (тип: {PROXY_TYPE})")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
