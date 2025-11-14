@@ -50,12 +50,29 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 app = Flask(__name__)
 
-# CORS поддержка (если нужна)
+# CORS поддержка для Chrome расширения и YouTube
 try:
     from flask_cors import CORS
-    CORS(app, origins=["chrome-extension://*", "https://*.youtube.com"])
+
+    # Разрешить запросы с:
+    # 1. Chrome расширений (любых)
+    # 2. YouTube.com и всех поддоменов
+    # 3. www.youtube.com
+    cors_config = {
+        "origins": [
+            "chrome-extension://*",           # Все Chrome расширения
+            "https://www.youtube.com",        # YouTube (www версия)
+            "https://youtube.com",            # YouTube (без www)
+            "https://*.youtube.com"           # Все поддомены YouTube
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+
+    CORS(app, resources={"/api/*": cors_config})
+    logger.info("✅ CORS включен для Chrome расширений и YouTube")
 except ImportError:
-    logger.warning("flask-cors не установлен, CORS отключен")
+    logger.error("❌ flask-cors не установлен! CORS отключен. Расширение работать не будет!")
 
 # ============================================================================
 # КОНФИГУРАЦИЯ
