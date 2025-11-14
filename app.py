@@ -17,16 +17,24 @@ YouTube Subtitles API Backend
 import os
 import json
 import logging
+import traceback
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
-# Попытка импортировать WebshareProxyConfig
+# Попытка импортировать proxy config
 try:
     from youtube_transcript_api.proxies import WebshareProxyConfig
-    WEBSHARE_AVAILABLE = True
+    PROXY_CONFIG_AVAILABLE = True
+    PROXY_TYPE = "webshare"
 except ImportError:
-    WEBSHARE_AVAILABLE = False
+    try:
+        from youtube_transcript_api.proxies import GenericProxyConfig
+        PROXY_CONFIG_AVAILABLE = True
+        PROXY_TYPE = "generic"
+    except ImportError:
+        PROXY_CONFIG_AVAILABLE = False
+        PROXY_TYPE = None
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
@@ -61,23 +69,33 @@ WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)
 
 # Инициализируем YouTube API с прокси если доступны credentials
 youtube_api = None
-if WEBSHARE_USERNAME and WEBSHARE_PASSWORD and WEBSHARE_AVAILABLE:
+if WEBSHARE_USERNAME and WEBSHARE_PASSWORD and PROXY_CONFIG_AVAILABLE:
     try:
-        proxy_config = WebshareProxyConfig(
-            proxy_username=WEBSHARE_USERNAME,
-            proxy_password=WEBSHARE_PASSWORD
-        )
-        youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-        logger.info("✅ YouTube API инициализирован с Webshare прокси")
+        if PROXY_TYPE == "webshare":
+            # Используем WebshareProxyConfig если доступна
+            proxy_config = WebshareProxyConfig(
+                proxy_username=WEBSHARE_USERNAME,
+                proxy_password=WEBSHARE_PASSWORD
+            )
+            youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+            logger.info("✅ YouTube API инициализирован с Webshare прокси (WebshareProxyConfig)")
+        elif PROXY_TYPE == "generic":
+            # Используем GenericProxyConfig для старых версий или других провайдеров
+            # Формат URL: http://username:password@host:port
+            proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@proxy.webshare.io:80"
+            proxy_config = GenericProxyConfig(http_proxy=proxy_url, https_proxy=proxy_url)
+            youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+            logger.info("✅ YouTube API инициализирован с Webshare прокси (GenericProxyConfig)")
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации прокси: {str(e)}, используем обычный API")
+        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
         youtube_api = YouTubeTranscriptApi()
 else:
     youtube_api = YouTubeTranscriptApi()
     if not WEBSHARE_USERNAME or not WEBSHARE_PASSWORD:
         logger.warning("⚠️ Переменные окружения WEBSHARE_PROXY_USERNAME/PASSWORD не установлены")
-    if not WEBSHARE_AVAILABLE:
-        logger.warning("⚠️ WebshareProxyConfig недоступна в текущей версии youtube-transcript-api")
+    if not PROXY_CONFIG_AVAILABLE:
+        logger.warning(f"⚠️ Proxy config недоступна в текущей версии youtube-transcript-api (тип: {PROXY_TYPE})")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
