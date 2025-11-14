@@ -439,8 +439,7 @@ def get_subtitles():
                 "language": actual_language,     # Язык который был найден
                 "translatedTo": translate_to,
                 "subtitles": formatted_subtitles,
-                "count": len(formatted_subtitles),
-                "availableLanguages": get_available_languages(video_id)
+                "count": len(formatted_subtitles)
             }), 200
 
         except TranscriptsDisabled:
