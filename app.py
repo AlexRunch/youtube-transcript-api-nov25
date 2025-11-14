@@ -133,7 +133,12 @@ def format_subtitles(transcript_list):
 def get_available_languages(video_id):
     """Получить список доступных языков для видео"""
     try:
-        transcript_list = youtube_api.list_transcripts(video_id)
+        # Новый API использует .list() вместо .list_transcripts()
+        try:
+            transcript_list = youtube_api.list(video_id)
+        except AttributeError:
+            # Fallback для старых версий
+            transcript_list = youtube_api.list_transcripts(video_id)
 
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
@@ -166,6 +171,7 @@ def get_available_languages(video_id):
         return languages
     except Exception as e:
         logger.error(f"❌ Ошибка при получении языков для {video_id}: {str(e)}")
+        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
         return []
 
 
@@ -234,7 +240,14 @@ def get_subtitles():
         try:
             # Список доступных транскриптов для видео
             logger.info(f"📡 Запрашиваем список транскриптов для видео {video_id}...")
-            transcript_list = youtube_api.list_transcripts(video_id)
+
+            # Новый API использует .list() вместо .list_transcripts()
+            try:
+                transcript_list = youtube_api.list(video_id)
+            except AttributeError:
+                # Fallback для старых версий
+                transcript_list = youtube_api.list_transcripts(video_id)
+
             logger.info(f"✅ Получен список транскриптов для {video_id}")
 
             # Пытаемся получить субтитры на запрашиваемом языке
