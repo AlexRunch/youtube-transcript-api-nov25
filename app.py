@@ -276,12 +276,15 @@ def get_subtitles():
                 transcript = transcript_list.find_transcript([language])
                 logger.info(f"✅ Найдены субтитры на {language}")
             except NoTranscriptFound:
-                logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный")
+                logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный язык YouTube")
                 # Если запрашиваемый язык не найден, берем первый доступный
+                # find_transcript с пустым списком вернет первый язык из youtube_api.list()
+                # Порядок определяет YouTube API (обычно: язык видео, потом популярные)
                 try:
-                    # find_transcript с пустым списком должен вернуть первый доступный
                     transcript = transcript_list.find_transcript([])
-                    logger.info(f"✅ Используем первый доступный язык")
+                    # Определяем какой язык был выбран
+                    actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
+                    logger.info(f"✅ Используем первый доступный язык: {actual_language}")
                 except (NoTranscriptFound, Exception) as e:
                     logger.error(f"❌ Не удалось найти ни один доступный язык: {str(e)}")
                     return jsonify({
@@ -306,10 +309,14 @@ def get_subtitles():
 
             logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров для {video_id}")
 
+            # Получаем реальный язык который был использован
+            actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
+
             return jsonify({
                 "success": True,
                 "videoId": video_id,
-                "language": language,
+                "requestedLanguage": language,  # Язык которого просил клиент
+                "language": actual_language,     # Язык который был найден
                 "translatedTo": translate_to,
                 "subtitles": formatted_subtitles,
                 "count": len(formatted_subtitles),
