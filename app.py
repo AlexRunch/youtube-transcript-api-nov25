@@ -123,6 +123,40 @@ else:
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
+def get_first_available_transcript(transcript_list):
+    """
+    Получить первый доступный транскрипт (оригинальный язык видео).
+
+    Это один единственный YouTube API запрос, который уже был сделан.
+    Здесь мы просто парсим доступные языки из объекта transcript_list.
+
+    Возвращает первый найденный транскрипт (оригинальный язык видео).
+    """
+    # Старая версия API (если есть атрибуты)
+    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        return transcript_list.manually_created_transcripts[0]
+
+    if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+        return transcript_list.automatically_generated_transcripts[0]
+
+    # Новая версия API - используем build() метод
+    # Это не требует дополнительных запросов, информация уже есть в объекте
+    try:
+        # Используем встроенный метод для получения всех доступных языков
+        available = transcript_list._manually_created_transcripts if hasattr(transcript_list, '_manually_created_transcripts') else []
+        if available:
+            return available[0]
+
+        available = transcript_list._generated_transcripts if hasattr(transcript_list, '_generated_transcripts') else []
+        if available:
+            return available[0]
+    except:
+        pass
+
+    # Если ничего не нашли, вернем None
+    return None
+
+
 def format_subtitles(transcript_list):
     """
     Преобразует format youtube-transcript-api в наш формат
@@ -473,18 +507,10 @@ def get_subtitles_v2(video_id):
             }), 400
 
         # Получаем параметры запроса
-        language = request.args.get('lang', 'en').strip()
+        # Параметр lang игнорируется - всегда возвращаем оригинальный язык видео
         response_format = request.args.get('format', 'json').strip()
 
-        if not language:
-            return jsonify({
-                "success": False,
-                "status": "error",
-                "error": "Missing required parameter: lang",
-                "videoId": video_id
-            }), 400
-
-        logger.info(f"📥 GET запрос: видео {video_id}, язык {language}")
+        logger.info(f"📥 GET запрос: видео {video_id} (lang параметр игнорируется - возвращаем оригинальный язык)")
 
         # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
         try:
@@ -496,24 +522,22 @@ def get_subtitles_v2(video_id):
 
             logger.info(f"✅ Получен список транскриптов для {video_id}")
 
-            # Пытаемся получить субтитры на запрашиваемом языке
-            transcript = None
+            # Получаем первый доступный язык (оригинальный язык видео)
+            # Это не требует дополнительных YouTube API запросов
+            transcript = get_first_available_transcript(transcript_list)
 
-            try:
-                transcript = transcript_list.find_transcript([language])
-                logger.info(f"✅ Найдены субтитры на {language}")
-            except NoTranscriptFound:
-                logger.warning(f"⚠️ Субтитры на {language} не найдены")
-                # Запрошенный язык недоступен - возвращаем ошибку (без fallback)
+            if transcript is None:
+                logger.error(f"❌ Нет ни одного доступного транскрипта для видео")
                 return jsonify({
                     "success": False,
                     "status": "error",
-                    "error": f"No subtitles found for language: {language}",
+                    "error": "No subtitles available for this video",
                     "videoId": video_id,
-                    "language": language,
                     "count": 0,
                     "subtitles": []
                 }), 200
+
+            logger.info(f"✅ Получаем субтитры на оригинальном языке: {transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'}")
 
             # Получаем субтитры
             subtitle_data = transcript.fetch()
@@ -523,7 +547,7 @@ def get_subtitles_v2(video_id):
 
             logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров для {video_id}")
 
-            actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
+            actual_language = transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'
 
             return jsonify({
                 "success": True,
@@ -541,7 +565,6 @@ def get_subtitles_v2(video_id):
                 "status": "error",
                 "error": "Transcripts are disabled for this video",
                 "videoId": video_id,
-                "language": language,
                 "count": 0,
                 "subtitles": []
             }), 200
@@ -562,7 +585,6 @@ def get_subtitles_v2(video_id):
                 "status": "error",
                 "error": f"Failed to fetch subtitles: {str(e)}",
                 "videoId": video_id,
-                "language": language,
                 "count": 0,
                 "subtitles": []
             }), 200
