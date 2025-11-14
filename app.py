@@ -108,9 +108,15 @@ else:
 
 def format_subtitles(transcript_list):
     """
-    Преобразует formаt youtube-transcript-api в наш формат
+    Преобразует format youtube-transcript-api в наш формат
 
-    Входящий формат:
+    Входящий формат (новая версия - объекты):
+    [
+        FetchedTranscriptSnippet(text="Hello", start=0.5, duration=1.5),
+        ...
+    ]
+
+    Входящий формат (старая версия - словари):
     [
         {"text": "Hello", "start": 0.5, "duration": 1.5},
         ...
@@ -122,14 +128,24 @@ def format_subtitles(transcript_list):
         ...
     ]
     """
-    return [
-        {
-            "time": float(item.get("start", 0)),
-            "duration": float(item.get("duration", 0)),
-            "text": item.get("text", "")
-        }
-        for item in transcript_list
-    ]
+    result = []
+    for item in transcript_list:
+        # Обработка объектов FetchedTranscriptSnippet (новая версия)
+        if hasattr(item, 'text'):
+            # Это объект с атрибутами
+            result.append({
+                "time": float(getattr(item, 'start', 0)),
+                "duration": float(getattr(item, 'duration', 0)),
+                "text": getattr(item, 'text', '')
+            })
+        else:
+            # Это словарь (старая версия)
+            result.append({
+                "time": float(item.get("start", 0)),
+                "duration": float(item.get("duration", 0)),
+                "text": item.get("text", "")
+            })
+    return result
 
 
 def get_available_languages(video_id):
