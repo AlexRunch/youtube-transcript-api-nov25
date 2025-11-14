@@ -64,8 +64,9 @@ PORT = int(os.getenv('PORT', 5000))
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
 # Конфигурация прокси для Webshare (решает проблему блокировки Railway IP)
-WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)
-WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)
+# Временно отключаем прокси для тестирования
+WEBSHARE_USERNAME = None  # os.getenv('WEBSHARE_PROXY_USERNAME', None)
+WEBSHARE_PASSWORD = None  # os.getenv('WEBSHARE_PROXY_PASSWORD', None)
 
 # Инициализируем YouTube API с прокси если доступны credentials
 youtube_api = None
