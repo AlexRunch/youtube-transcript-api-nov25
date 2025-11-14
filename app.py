@@ -21,6 +21,13 @@ from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
+# Попытка импортировать WebshareProxyConfig
+try:
+    from youtube_transcript_api.proxies import WebshareProxyConfig
+    WEBSHARE_AVAILABLE = True
+except ImportError:
+    WEBSHARE_AVAILABLE = False
+
 # ============================================================================
 # ЛОГИРОВАНИЕ
 # ============================================================================
@@ -47,6 +54,30 @@ except ImportError:
 # ============================================================================
 PORT = int(os.getenv('PORT', 5000))
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+
+# Конфигурация прокси для Webshare (решает проблему блокировки Railway IP)
+WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)
+WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)
+
+# Инициализируем YouTube API с прокси если доступны credentials
+youtube_api = None
+if WEBSHARE_USERNAME and WEBSHARE_PASSWORD and WEBSHARE_AVAILABLE:
+    try:
+        proxy_config = WebshareProxyConfig(
+            proxy_username=WEBSHARE_USERNAME,
+            proxy_password=WEBSHARE_PASSWORD
+        )
+        youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+        logger.info("✅ YouTube API инициализирован с Webshare прокси")
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка инициализации прокси: {str(e)}, используем обычный API")
+        youtube_api = YouTubeTranscriptApi()
+else:
+    youtube_api = YouTubeTranscriptApi()
+    if not WEBSHARE_USERNAME or not WEBSHARE_PASSWORD:
+        logger.warning("⚠️ Переменные окружения WEBSHARE_PROXY_USERNAME/PASSWORD не установлены")
+    if not WEBSHARE_AVAILABLE:
+        logger.warning("⚠️ WebshareProxyConfig недоступна в текущей версии youtube-transcript-api")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -81,7 +112,7 @@ def format_subtitles(transcript_list):
 def get_available_languages(video_id):
     """Получить список доступных языков для видео"""
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = youtube_api.list_transcripts(video_id)
 
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
@@ -182,7 +213,7 @@ def get_subtitles():
         try:
             # Список доступных транскриптов для видео
             logger.info(f"📡 Запрашиваем список транскриптов для видео {video_id}...")
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript_list = youtube_api.list_transcripts(video_id)
             logger.info(f"✅ Получен список транскриптов для {video_id}")
 
             # Пытаемся получить субтитры на запрашиваемом языке
