@@ -200,6 +200,50 @@ def format_subtitles(transcript_list):
     return result
 
 
+def format_subtitles_for_extension(transcript_list):
+    """
+    Преобразует субтитры в формат для второго расширения (YouTube Description Generator + Title & Chapters).
+
+    Входящий формат (youtube-transcript-api):
+    [
+        {"text": "Hello", "start": 0.5, "duration": 1.5},
+        ...
+    ]
+
+    Выходящий формат:
+    [
+        {"index": 0, "start": 0.5, "end": 2.0, "dur": 1.5, "text": "Hello"},
+        ...
+    ]
+    """
+    result = []
+    for index, item in enumerate(transcript_list):
+        # Получаем значения start и duration
+        if hasattr(item, 'text'):
+            # Это объект FetchedTranscriptSnippet (новая версия)
+            start = float(getattr(item, 'start', 0))
+            duration = float(getattr(item, 'duration', 0))
+            text = getattr(item, 'text', '')
+        else:
+            # Это словарь (старая версия)
+            start = float(item.get("start", 0))
+            duration = float(item.get("duration", 0))
+            text = item.get("text", "")
+
+        # Вычисляем end время
+        end = start + duration
+
+        result.append({
+            "index": index,
+            "start": start,
+            "end": end,
+            "dur": duration,
+            "text": text
+        })
+
+    return result
+
+
 def get_available_languages(video_id):
     """Получить список доступных языков для видео"""
     try:
@@ -457,6 +501,166 @@ def get_languages(video_id):
         return jsonify({
             "success": False,
             "error": str(e)
+        }), 500
+
+
+@app.route('/api/subtitles/<video_id>', methods=['GET'])
+def get_subtitles_v2(video_id):
+    """
+    GET эндпоинт для получения субтитров (для второго расширения).
+    Возвращает субтитры в формате: {index, start, end, dur, text}
+
+    Query Parameters:
+    - lang: язык субтитров (обязательно)
+    - format: формат ответа (json по умолчанию)
+
+    Пример:
+    GET /api/subtitles/dQw4w9WgXcQ?lang=en
+
+    Response:
+    {
+        "success": true,
+        "status": "completed",
+        "videoId": "dQw4w9WgXcQ",
+        "language": "en",
+        "count": 42,
+        "subtitles": [
+            {"index": 0, "start": 0.5, "end": 3.2, "dur": 2.7, "text": "Hello"},
+            ...
+        ]
+    }
+    """
+    try:
+        # Валидируем video_id
+        video_id = video_id.strip()
+        if not video_id or len(video_id) != 11:
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Invalid video ID format. Must be 11 characters.",
+                "videoId": video_id
+            }), 400
+
+        # Получаем параметры запроса
+        language = request.args.get('lang', 'en').strip()
+        response_format = request.args.get('format', 'json').strip()
+
+        if not language:
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Missing required parameter: lang",
+                "videoId": video_id
+            }), 400
+
+        logger.info(f"📥 GET запрос: видео {video_id}, язык {language}")
+
+        # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
+        try:
+            # Получаем список доступных транскриптов
+            try:
+                transcript_list = youtube_api.list(video_id)
+            except AttributeError:
+                transcript_list = youtube_api.list_transcripts(video_id)
+
+            logger.info(f"✅ Получен список транскриптов для {video_id}")
+
+            # Пытаемся получить субтитры на запрашиваемом языке
+            transcript = None
+
+            try:
+                transcript = transcript_list.find_transcript([language])
+                logger.info(f"✅ Найдены субтитры на {language}")
+            except NoTranscriptFound:
+                logger.warning(f"⚠️ Субтитры на {language} не найдены, используем первый доступный язык")
+                try:
+                    transcript = get_first_available_transcript(transcript_list)
+                    if transcript is None:
+                        logger.error(f"❌ Нет ни одного доступного транскрипта для видео")
+                        return jsonify({
+                            "success": False,
+                            "status": "error",
+                            "error": "No subtitles found for this video",
+                            "videoId": video_id,
+                            "language": language,
+                            "count": 0,
+                            "subtitles": []
+                        }), 200
+
+                    actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
+                    logger.info(f"✅ Используем первый доступный язык: {actual_language}")
+                    language = actual_language
+
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при выборе fallback языка: {str(e)}")
+                    return jsonify({
+                        "success": False,
+                        "status": "error",
+                        "error": "No subtitles found for this video",
+                        "videoId": video_id,
+                        "language": language,
+                        "count": 0,
+                        "subtitles": []
+                    }), 200
+
+            # Получаем субтитры
+            subtitle_data = transcript.fetch()
+
+            # Форматируем субтитры в требуемый формат
+            formatted_subtitles = format_subtitles_for_extension(subtitle_data)
+
+            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров для {video_id}")
+
+            actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
+
+            return jsonify({
+                "success": True,
+                "status": "completed",
+                "videoId": video_id,
+                "language": actual_language,
+                "count": len(formatted_subtitles),
+                "subtitles": formatted_subtitles
+            }), 200
+
+        except TranscriptsDisabled:
+            logger.error(f"❌ Субтитры отключены для видео {video_id}")
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Transcripts are disabled for this video",
+                "videoId": video_id,
+                "language": language,
+                "count": 0,
+                "subtitles": []
+            }), 200
+
+        except VideoUnavailable:
+            logger.error(f"❌ Видео недоступно: {video_id}")
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Video not found on YouTube",
+                "videoId": video_id
+            }), 404
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения субтитров: {str(e)}")
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": f"Failed to fetch subtitles: {str(e)}",
+                "videoId": video_id,
+                "language": language,
+                "count": 0,
+                "subtitles": []
+            }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в /api/subtitles/<videoId>: {str(e)}")
+        return jsonify({
+            "success": False,
+            "status": "error",
+            "error": "Internal server error"
         }), 500
 
 
