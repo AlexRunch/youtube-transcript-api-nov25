@@ -18,6 +18,9 @@ import os
 import json
 import logging
 import traceback
+import time
+import threading
+from queue import Queue
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
@@ -44,6 +47,36 @@ logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# RATE LIMITING И КОНТРОЛЬ ОДНОВРЕМЕННЫХ ЗАПРОСОВ К YOUTUBE
+# ============================================================================
+class YouTubeRateLimiter:
+    """
+    Контролирует частоту запросов к YouTube чтобы избежать блокировки.
+
+    Стратегия:
+    - Максимум 1 запрос к YouTube в 0.5 секунды (2 запроса в секунду)
+    - Это предотвращает блокировку из-за слишком частых запросов
+    - При большом количестве пользователей запросы будут ставиться в очередь
+    """
+    def __init__(self, min_interval=0.5):
+        self.min_interval = min_interval  # минимум секунд между YouTube запросами
+        self.last_request_time = 0
+        self.lock = threading.Lock()
+
+    def wait_if_needed(self):
+        """Подождать если нужно перед следующим YouTube запросом"""
+        with self.lock:
+            elapsed = time.time() - self.last_request_time
+            if elapsed < self.min_interval:
+                sleep_time = self.min_interval - elapsed
+                logger.info(f"⏱️ Rate limiter: ожидание {sleep_time:.2f}сек перед запросом к YouTube")
+                time.sleep(sleep_time)
+            self.last_request_time = time.time()
+
+# Глобальный rate limiter для YouTube запросов
+youtube_rate_limiter = YouTubeRateLimiter(min_interval=0.5)
 
 # ============================================================================
 # ИНИЦИАЛИЗАЦИЯ FLASK
@@ -386,6 +419,9 @@ def get_subtitles():
             # Список доступных транскриптов для видео
             logger.info(f"📡 Запрашиваем список транскриптов для видео {video_id}...")
 
+            # Rate limiting перед YouTube API вызовом
+            youtube_rate_limiter.wait_if_needed()
+
             # Новый API использует .list() вместо .list_transcripts()
             try:
                 transcript_list = youtube_api.list(video_id)
@@ -415,11 +451,17 @@ def get_subtitles():
                 logger.info(f"🌐 Переводим субтитры на {translate_to}")
                 try:
                     translated = transcript.translate(translate_to)
+                    # Rate limiting перед fetch YouTube API вызовом
+                    youtube_rate_limiter.wait_if_needed()
                     subtitle_data = translated.fetch()
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка перевода на {translate_to}, используем оригинал: {str(e)}")
+                    # Rate limiting перед fetch YouTube API вызовом
+                    youtube_rate_limiter.wait_if_needed()
                     subtitle_data = transcript.fetch()
             else:
+                # Rate limiting перед fetch YouTube API вызовом
+                youtube_rate_limiter.wait_if_needed()
                 subtitle_data = transcript.fetch()
 
             # Форматируем субтитры
@@ -547,6 +589,9 @@ def get_subtitles_v2(video_id):
         # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
         try:
             # Получаем список доступных транскриптов
+            # Rate limiting перед YouTube API вызовом
+            youtube_rate_limiter.wait_if_needed()
+
             try:
                 transcript_list = youtube_api.list(video_id)
             except AttributeError:
@@ -572,6 +617,8 @@ def get_subtitles_v2(video_id):
             logger.info(f"✅ Получаем субтитры на оригинальном языке: {transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'}")
 
             # Получаем субтитры
+            # Rate limiting перед fetch YouTube API вызовом
+            youtube_rate_limiter.wait_if_needed()
             subtitle_data = transcript.fetch()
 
             # Форматируем субтитры в требуемый формат
