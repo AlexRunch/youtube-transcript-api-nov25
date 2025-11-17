@@ -132,26 +132,36 @@ def get_first_available_transcript(transcript_list):
 
     Возвращает первый найденный транскрипт (оригинальный язык видео).
     """
-    # DEBUG: логируем какие атрибуты доступны
-    logger.info(f"🔍 DEBUG get_first_available_transcript:")
-    logger.info(f"   transcript_list type: {type(transcript_list)}")
-    logger.info(f"   has manually_created_transcripts: {hasattr(transcript_list, 'manually_created_transcripts')}")
-    logger.info(f"   has automatically_generated_transcripts: {hasattr(transcript_list, 'automatically_generated_transcripts')}")
-
     # Приоритет 1: Вручную созданные субтитры (обычно на оригинальном языке)
-    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
-        logger.info(f"   ✅ Found {len(transcript_list.manually_created_transcripts)} manually created transcripts")
-        return transcript_list.manually_created_transcripts[0]
+    # Новая версия youtube-transcript-api использует _manually_created_transcripts (словарь)
+    if hasattr(transcript_list, '_manually_created_transcripts'):
+        manually_created = getattr(transcript_list, '_manually_created_transcripts', {})
+        if manually_created:
+            # Получаем первый транскрипт из словаря
+            first_transcript = next(iter(manually_created.values()))
+            logger.info(f"✅ Found manually created transcript: {first_transcript.language_code}")
+            return first_transcript
 
     # Приоритет 2: Автоматически сгенерированные субтитры
+    if hasattr(transcript_list, '_generated_transcripts'):
+        generated = getattr(transcript_list, '_generated_transcripts', {})
+        if generated:
+            # Получаем первый транскрипт из словаря
+            first_transcript = next(iter(generated.values()))
+            logger.info(f"✅ Found auto-generated transcript: {first_transcript.language_code}")
+            return first_transcript
+
+    # Fallback для старых версий API
+    if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        logger.info(f"✅ Found {len(transcript_list.manually_created_transcripts)} manually created transcripts (old API)")
+        return transcript_list.manually_created_transcripts[0]
+
     if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
-        logger.info(f"   ✅ Found {len(transcript_list.automatically_generated_transcripts)} auto-generated transcripts")
+        logger.info(f"✅ Found {len(transcript_list.automatically_generated_transcripts)} auto-generated transcripts (old API)")
         return transcript_list.automatically_generated_transcripts[0]
 
-    # DEBUG: если ничего не нашли, логируем все доступные атрибуты
-    logger.warning(f"   ⚠️ No transcripts found! Available attributes: {dir(transcript_list)}")
-
     # Если ничего не нашли, вернем None
+    logger.error(f"❌ No transcripts found for video")
     return None
 
 
@@ -254,8 +264,20 @@ def get_available_languages(video_id):
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
 
-        # Вручную созданные субтитры (старая версия API)
-        if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        # Вручную созданные субтитры (новая версия API использует _manually_created_transcripts)
+        if hasattr(transcript_list, '_manually_created_transcripts'):
+            try:
+                manually_created = getattr(transcript_list, '_manually_created_transcripts', {})
+                for lang_code, transcript in manually_created.items():
+                    languages.append({
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "isAuto": False
+                    })
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
+        # Fallback для старых версий API
+        elif hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
             try:
                 for transcript in transcript_list.manually_created_transcripts:
                     languages.append({
@@ -266,8 +288,20 @@ def get_available_languages(video_id):
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке вручную созданных субтитров: {str(e)}")
 
-        # Автоматически сгенерированные субтитры (старая версия API)
-        if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+        # Автоматически сгенерированные субтитры (новая версия API использует _generated_transcripts)
+        if hasattr(transcript_list, '_generated_transcripts'):
+            try:
+                generated = getattr(transcript_list, '_generated_transcripts', {})
+                for lang_code, transcript in generated.items():
+                    languages.append({
+                        "code": transcript.language_code,
+                        "name": transcript.language,
+                        "isAuto": True
+                    })
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при обработке автоматических субтитров: {str(e)}")
+        # Fallback для старых версий API
+        elif hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
             try:
                 for transcript in transcript_list.automatically_generated_transcripts:
                     languages.append({
