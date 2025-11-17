@@ -132,13 +132,24 @@ def get_first_available_transcript(transcript_list):
 
     Возвращает первый найденный транскрипт (оригинальный язык видео).
     """
+    # DEBUG: логируем какие атрибуты доступны
+    logger.info(f"🔍 DEBUG get_first_available_transcript:")
+    logger.info(f"   transcript_list type: {type(transcript_list)}")
+    logger.info(f"   has manually_created_transcripts: {hasattr(transcript_list, 'manually_created_transcripts')}")
+    logger.info(f"   has automatically_generated_transcripts: {hasattr(transcript_list, 'automatically_generated_transcripts')}")
+
     # Приоритет 1: Вручную созданные субтитры (обычно на оригинальном языке)
     if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        logger.info(f"   ✅ Found {len(transcript_list.manually_created_transcripts)} manually created transcripts")
         return transcript_list.manually_created_transcripts[0]
 
     # Приоритет 2: Автоматически сгенерированные субтитры
     if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+        logger.info(f"   ✅ Found {len(transcript_list.automatically_generated_transcripts)} auto-generated transcripts")
         return transcript_list.automatically_generated_transcripts[0]
+
+    # DEBUG: если ничего не нашли, логируем все доступные атрибуты
+    logger.warning(f"   ⚠️ No transcripts found! Available attributes: {dir(transcript_list)}")
 
     # Если ничего не нашли, вернем None
     return None
