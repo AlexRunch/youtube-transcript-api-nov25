@@ -132,26 +132,13 @@ def get_first_available_transcript(transcript_list):
 
     Возвращает первый найденный транскрипт (оригинальный язык видео).
     """
-    # Старая версия API (если есть атрибуты)
+    # Приоритет 1: Вручную созданные субтитры (обычно на оригинальном языке)
     if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
         return transcript_list.manually_created_transcripts[0]
 
+    # Приоритет 2: Автоматически сгенерированные субтитры
     if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
         return transcript_list.automatically_generated_transcripts[0]
-
-    # Новая версия API - используем build() метод
-    # Это не требует дополнительных запросов, информация уже есть в объекте
-    try:
-        # Используем встроенный метод для получения всех доступных языков
-        available = transcript_list._manually_created_transcripts if hasattr(transcript_list, '_manually_created_transcripts') else []
-        if available:
-            return available[0]
-
-        available = transcript_list._generated_transcripts if hasattr(transcript_list, '_generated_transcripts') else []
-        if available:
-            return available[0]
-    except:
-        pass
 
     # Если ничего не нашли, вернем None
     return None
