@@ -468,6 +468,7 @@ def get_subtitles():
     }
     """
     try:
+        start_time = time.time()
         data = request.get_json() or {}
         video_id = data.get('videoId', '').strip()
         language = data.get('language', 'en').strip()
@@ -493,6 +494,7 @@ def get_subtitles():
         # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
         try:
             # Список доступных транскриптов для видео
+            list_start = time.time()
             logger.info(f"📡 Запрашиваем список транскриптов для видео {video_id}...")
 
             # Rate limiting перед YouTube API вызовом
@@ -505,7 +507,8 @@ def get_subtitles():
                 # Fallback для старых версий
                 transcript_list = youtube_api.list_transcripts(video_id)
 
-            logger.info(f"✅ Получен список транскриптов для {video_id}")
+            list_duration = time.time() - list_start
+            logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
 
             # Пытаемся получить субтитры на запрашиваемом языке
             transcript = None
@@ -523,6 +526,7 @@ def get_subtitles():
                 }), 404
 
             # Получаем субтитры (с переводом если нужен)
+            fetch_start = time.time()
             if translate_to and translate_to != language:
                 logger.info(f"🌐 Переводим субтитры на {translate_to}")
                 try:
@@ -540,10 +544,16 @@ def get_subtitles():
                 youtube_rate_limiter.wait_if_needed()
                 subtitle_data = transcript.fetch()
 
-            # Форматируем субтитры
-            formatted_subtitles = format_subtitles(subtitle_data)
+            fetch_duration = time.time() - fetch_start
+            logger.info(f"⏱️ Fetch сек: {fetch_duration:.2f}сек")
 
-            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров для {video_id}")
+            # Форматируем субтитры
+            format_start = time.time()
+            formatted_subtitles = format_subtitles(subtitle_data)
+            format_duration = time.time() - format_start
+
+            total_duration = time.time() - start_time
+            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров за {total_duration:.2f}сек (список: {list_duration:.2f}с, fetch: {fetch_duration:.2f}с, формат: {format_duration:.2f}с)")
 
             # Получаем реальный язык который был использован
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
@@ -646,6 +656,7 @@ def get_subtitles_v2(video_id):
     }
     """
     try:
+        start_time = time.time()
         # Валидируем video_id
         video_id = video_id.strip()
         if not video_id or len(video_id) != 11:
@@ -665,6 +676,7 @@ def get_subtitles_v2(video_id):
         # ===== ПОЛУЧЕНИЕ СУБТИТРОВ =====
         try:
             # Получаем список доступных транскриптов
+            list_start = time.time()
             # Rate limiting перед YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
 
@@ -673,7 +685,8 @@ def get_subtitles_v2(video_id):
             except AttributeError:
                 transcript_list = youtube_api.list_transcripts(video_id)
 
-            logger.info(f"✅ Получен список транскриптов для {video_id}")
+            list_duration = time.time() - list_start
+            logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
 
             # Получаем первый доступный язык (оригинальный язык видео)
             # Это не требует дополнительных YouTube API запросов
@@ -693,14 +706,19 @@ def get_subtitles_v2(video_id):
             logger.info(f"✅ Получаем субтитры на оригинальном языке: {transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'}")
 
             # Получаем субтитры
+            fetch_start = time.time()
             # Rate limiting перед fetch YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
             subtitle_data = transcript.fetch()
 
+            fetch_duration = time.time() - fetch_start
+            logger.info(f"⏱️ Fetch: {fetch_duration:.2f}сек")
+
             # Форматируем субтитры в требуемый формат
             formatted_subtitles = format_subtitles_for_extension(subtitle_data)
 
-            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров для {video_id}")
+            total_duration = time.time() - start_time
+            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров за {total_duration:.2f}сек (список: {list_duration:.2f}с, fetch: {fetch_duration:.2f}с)")
 
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'
 
@@ -773,6 +791,7 @@ def get_subtitles_test(video_id):
     Возвращает тот же формат что и основной GET endpoint.
     """
     try:
+        start_time = time.time()
         video_id = video_id.strip()
         if not video_id or len(video_id) != 11:
             return jsonify({
@@ -787,6 +806,7 @@ def get_subtitles_test(video_id):
 
         try:
             # Rate limiting
+            list_start = time.time()
             youtube_rate_limiter.wait_if_needed()
 
             try:
@@ -794,7 +814,8 @@ def get_subtitles_test(video_id):
             except AttributeError:
                 transcript_list = youtube_api.list_transcripts(video_id)
 
-            logger.info(f"✅ Получен список транскриптов для {video_id}")
+            list_duration = time.time() - list_start
+            logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
 
             # Логировать запрос в монитор
             request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param)
@@ -825,14 +846,21 @@ def get_subtitles_test(video_id):
             logger.info(f"✅ Получаем субтитры: {transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'}")
 
             # Rate limiting перед fetch
+            fetch_start = time.time()
             youtube_rate_limiter.wait_if_needed()
             subtitle_data = transcript.fetch()
+
+            fetch_duration = time.time() - fetch_start
+            logger.info(f"⏱️ Fetch: {fetch_duration:.2f}сек")
 
             # Логировать успех
             request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param, status='success')
 
             formatted_subtitles = format_subtitles_for_extension(subtitle_data)
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'
+
+            total_duration = time.time() - start_time
+            logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров за {total_duration:.2f}сек (список: {list_duration:.2f}с, fetch: {fetch_duration:.2f}с)")
 
             return jsonify({
                 "success": True,
