@@ -79,6 +79,82 @@ class YouTubeRateLimiter:
 youtube_rate_limiter = YouTubeRateLimiter(min_interval=0.5)
 
 # ============================================================================
+# REQUEST MONITORING (для отслеживания YouTube API запросов)
+# ============================================================================
+class RequestMonitor:
+    """
+    Мониторит количество запросов к YouTube для раннего обнаружения проблем.
+    """
+    def __init__(self):
+        self.requests_per_minute = 0
+        self.requests_per_hour = 0
+        self.last_reset_minute = time.time()
+        self.last_reset_hour = time.time()
+        self.lock = threading.Lock()
+        self.request_log = []  # Log последних 100 запросов
+
+    def log_youtube_request(self, video_id, endpoint, lang=None, status='success'):
+        """Логировать запрос к YouTube"""
+        with self.lock:
+            now = time.time()
+
+            # Сбросить счетчик если прошла минута
+            if now - self.last_reset_minute > 60:
+                self.requests_per_minute = 0
+                self.last_reset_minute = now
+
+            # Сбросить счетчик если прошел час
+            if now - self.last_reset_hour > 3600:
+                self.requests_per_hour = 0
+                self.last_reset_hour = now
+
+            self.requests_per_minute += 1
+            self.requests_per_hour += 1
+
+            # Логировать в список
+            request_info = {
+                'timestamp': now,
+                'video_id': video_id,
+                'endpoint': endpoint,
+                'lang': lang,
+                'status': status
+            }
+            self.request_log.append(request_info)
+
+            # Хранить только последние 100 запросов
+            if len(self.request_log) > 100:
+                self.request_log.pop(0)
+
+            # ⚠️ Предупреждение если слишком много запросов
+            if self.requests_per_minute > 10:
+                logger.warning(f"⚠️ ВНИМАНИЕ: {self.requests_per_minute} запросов в минуту! YouTube может заблокировать!")
+
+            if self.requests_per_hour > 100:
+                logger.error(f"🔴 КРИТИЧНО: {self.requests_per_hour} запросов в час! YouTube заблокирует!")
+
+    def get_stats(self):
+        """Получить статистику"""
+        with self.lock:
+            return {
+                'requests_per_minute': self.requests_per_minute,
+                'requests_per_hour': self.requests_per_hour,
+                'recent_requests': self.request_log[-10:],  # Последние 10
+                'status': self._get_health_status()
+            }
+
+    def _get_health_status(self):
+        """Определить здоровье системы"""
+        if self.requests_per_minute > 10:
+            return 'warning'
+        elif self.requests_per_hour > 100:
+            return 'critical'
+        else:
+            return 'healthy'
+
+# Глобальный монитор запросов
+request_monitor = RequestMonitor()
+
+# ============================================================================
 # ИНИЦИАЛИЗАЦИЯ FLASK
 # ============================================================================
 app = Flask(__name__)
@@ -675,6 +751,175 @@ def get_subtitles_v2(video_id):
             "status": "error",
             "error": "Internal server error"
         }), 500
+
+
+# ============================================================================
+# ТЕСТОВЫЕ ENDPOINT'Ы (с поддержкой параметра lang и мониторингом)
+# ============================================================================
+
+@app.route('/api/subtitles/test/<video_id>', methods=['GET'])
+def get_subtitles_test(video_id):
+    """
+    🧪 ТЕСТОВЫЙ endpoint для GET с поддержкой параметра lang.
+
+    Используйте для тестирования новой функциональности.
+    Этот endpoint логирует все запросы к YouTube и помогает отслеживать нагрузку.
+
+    URL: GET /api/subtitles/test/<videoId>?lang=<language>
+
+    Параметры:
+    - lang: опциональный язык субтитров (может быть auto-generated YouTube)
+
+    Возвращает тот же формат что и основной GET endpoint.
+    """
+    try:
+        video_id = video_id.strip()
+        if not video_id or len(video_id) != 11:
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Invalid video ID format. Must be 11 characters.",
+                "videoId": video_id
+            }), 400
+
+        lang_param = request.args.get('lang', '').strip()
+        logger.info(f"🧪 TEST запрос: видео {video_id}, язык {lang_param if lang_param else '(оригинальный)'}")
+
+        try:
+            # Rate limiting
+            youtube_rate_limiter.wait_if_needed()
+
+            try:
+                transcript_list = youtube_api.list(video_id)
+            except AttributeError:
+                transcript_list = youtube_api.list_transcripts(video_id)
+
+            logger.info(f"✅ Получен список транскриптов для {video_id}")
+
+            # Логировать запрос в монитор
+            request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param)
+
+            # Если указан язык - пытаемся найти его
+            if lang_param:
+                try:
+                    transcript = transcript_list.find_transcript([lang_param])
+                    logger.info(f"✅ Найдены субтитры на {lang_param}")
+                except NoTranscriptFound:
+                    logger.warning(f"⚠️ Язык {lang_param} не найден, возвращаем оригинальный")
+                    transcript = get_first_available_transcript(transcript_list)
+            else:
+                # Возвращаем оригинальный язык
+                transcript = get_first_available_transcript(transcript_list)
+
+            if transcript is None:
+                logger.error(f"❌ Нет ни одного доступного транскрипта для видео")
+                return jsonify({
+                    "success": False,
+                    "status": "error",
+                    "error": "No subtitles available for this video",
+                    "videoId": video_id,
+                    "count": 0,
+                    "subtitles": []
+                }), 200
+
+            logger.info(f"✅ Получаем субтитры: {transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'}")
+
+            # Rate limiting перед fetch
+            youtube_rate_limiter.wait_if_needed()
+            subtitle_data = transcript.fetch()
+
+            # Логировать успех
+            request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param, status='success')
+
+            formatted_subtitles = format_subtitles_for_extension(subtitle_data)
+            actual_language = transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'
+
+            return jsonify({
+                "success": True,
+                "status": "completed",
+                "videoId": video_id,
+                "language": actual_language,
+                "requested_language": lang_param if lang_param else None,
+                "count": len(formatted_subtitles),
+                "subtitles": formatted_subtitles,
+                "_test": True  # Маркер что это тестовый endpoint
+            }), 200
+
+        except TranscriptsDisabled:
+            logger.error(f"❌ Субтитры отключены для видео {video_id}")
+            request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param, status='disabled')
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Transcripts are disabled for this video",
+                "videoId": video_id,
+                "count": 0,
+                "subtitles": []
+            }), 200
+
+        except VideoUnavailable:
+            logger.error(f"❌ Видео недоступно: {video_id}")
+            request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param, status='not_found')
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": "Video not found on YouTube",
+                "videoId": video_id
+            }), 404
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {str(e)}")
+            request_monitor.log_youtube_request(video_id, 'GET_TEST', lang=lang_param, status='error')
+            return jsonify({
+                "success": False,
+                "status": "error",
+                "error": f"Failed to fetch subtitles: {str(e)}",
+                "videoId": video_id,
+                "count": 0,
+                "subtitles": []
+            }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в /api/subtitles/test/<videoId>: {str(e)}")
+        return jsonify({
+            "success": False,
+            "status": "error",
+            "error": "Internal server error"
+        }), 500
+
+
+@app.route('/api/monitoring', methods=['GET'])
+def get_monitoring():
+    """
+    📊 Endpoint мониторинга нагрузки на YouTube API.
+
+    Возвращает статистику по запросам к YouTube для отслеживания проблем.
+    """
+    stats = request_monitor.get_stats()
+
+    return jsonify({
+        "success": True,
+        "service": "YouTube Subtitles API Monitoring",
+        "monitoring_data": {
+            "requests_per_minute": stats['requests_per_minute'],
+            "requests_per_hour": stats['requests_per_hour'],
+            "status": stats['status'],
+            "health_alerts": {
+                "warning_at": 10,  # запросов в минуту
+                "critical_at": 100  # запросов в час
+            },
+            "recent_requests": [
+                {
+                    "video_id": req['video_id'],
+                    "endpoint": req['endpoint'],
+                    "language": req['lang'],
+                    "status": req['status'],
+                    "time_ago": f"{int(time.time() - req['timestamp'])}s ago"
+                }
+                for req in stats['recent_requests']
+            ]
+        }
+    }), 200
 
 
 # ============================================================================
