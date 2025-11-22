@@ -234,38 +234,61 @@ else:
 
 def get_first_available_transcript(transcript_list):
     """
-    Получить первый доступный транскрипт (оригинальный язык видео).
+    Получить первый доступный транскрипт с приоритизацией английского языка.
 
-    Это один единственный YouTube API запрос, который уже был сделан.
-    Здесь мы просто парсим доступные языки из объекта transcript_list.
+    Стратегия приоритизации:
+    1. Ищем английский язык (en, en-US, en-GB и т.д.)
+    2. Если нет - берем первый доступный язык
 
-    Возвращает первый найденный транскрипт (оригинальный язык видео).
+    Это решает проблему когда видео имеет несколько звуковых дорожек
+    (например en, fr, es) и YouTube возвращает субтитры не на оригинальном языке.
     """
-    # Приоритет 1: Вручную созданные субтитры (обычно на оригинальном языке)
-    # Новая версия youtube-transcript-api использует _manually_created_transcripts (словарь)
+    # Приоритет 1: Английский язык в вручную созданных субтитрах
     if hasattr(transcript_list, '_manually_created_transcripts'):
         manually_created = getattr(transcript_list, '_manually_created_transcripts', {})
         if manually_created:
-            # Получаем первый транскрипт из словаря
+            # Ищем английский язык (любой вариант: en, en-US, en-GB)
+            for lang_code in manually_created.keys():
+                if lang_code.startswith('en'):
+                    transcript = manually_created[lang_code]
+                    logger.info(f"✅ Found English transcript: {transcript.language_code} ({transcript.language})")
+                    return transcript
+
+            # Если английского нет - берем первый доступный
             first_transcript = next(iter(manually_created.values()))
-            logger.info(f"✅ Found manually created transcript: {first_transcript.language_code}")
+            logger.info(f"✅ Found manually created transcript (no English): {first_transcript.language_code}")
             return first_transcript
 
-    # Приоритет 2: Автоматически сгенерированные субтитры
+    # Приоритет 2: Английский язык в автоматически сгенерированных субтитрах
     if hasattr(transcript_list, '_generated_transcripts'):
         generated = getattr(transcript_list, '_generated_transcripts', {})
         if generated:
-            # Получаем первый транскрипт из словаря
+            # Ищем английский язык
+            for lang_code in generated.keys():
+                if lang_code.startswith('en'):
+                    transcript = generated[lang_code]
+                    logger.info(f"✅ Found English auto-generated transcript: {transcript.language_code}")
+                    return transcript
+
+            # Если английского нет - берем первый доступный
             first_transcript = next(iter(generated.values()))
-            logger.info(f"✅ Found auto-generated transcript: {first_transcript.language_code}")
+            logger.info(f"✅ Found auto-generated transcript (no English): {first_transcript.language_code}")
             return first_transcript
 
     # Fallback для старых версий API
     if hasattr(transcript_list, 'manually_created_transcripts') and transcript_list.manually_created_transcripts:
+        for transcript in transcript_list.manually_created_transcripts:
+            if transcript.language_code.startswith('en'):
+                logger.info(f"✅ Found English transcript (old API): {transcript.language_code}")
+                return transcript
         logger.info(f"✅ Found {len(transcript_list.manually_created_transcripts)} manually created transcripts (old API)")
         return transcript_list.manually_created_transcripts[0]
 
     if hasattr(transcript_list, 'automatically_generated_transcripts') and transcript_list.automatically_generated_transcripts:
+        for transcript in transcript_list.automatically_generated_transcripts:
+            if transcript.language_code.startswith('en'):
+                logger.info(f"✅ Found English transcript (old API): {transcript.language_code}")
+                return transcript
         logger.info(f"✅ Found {len(transcript_list.automatically_generated_transcripts)} auto-generated transcripts (old API)")
         return transcript_list.automatically_generated_transcripts[0]
 
