@@ -432,8 +432,8 @@ class NotificationManager:
         else:
             return str(data)
 
-# Глобальный менеджер уведомлений
-notification_manager = NotificationManager()
+# Глобальный менеджер уведомлений (инициализируется позже)
+notification_manager = None
 
 # ============================================================================
 # BLOCKAGE DETECTOR (обнаружение блокировки)
@@ -519,8 +519,8 @@ class BlockageDetector:
 
             return False, severity
 
-# Глобальный детектор
-blockage_detector = BlockageDetector()
+# Глобальный детектор (инициализируется позже)
+blockage_detector = None
 
 # ============================================================================
 # DAILY REPORT GENERATOR
@@ -529,6 +529,10 @@ blockage_detector = BlockageDetector()
 def generate_daily_report():
     """Генерировать и отправить ежедневный отчет"""
     try:
+        if not notification_manager:
+            logger.warning("⚠️ NotificationManager не инициализирован, пропуск отчета")
+            return
+
         stats = request_monitor.get_daily_stats()
 
         if stats['total_requests'] == 0:
@@ -606,6 +610,24 @@ def init_scheduler():
 
 # Инициализировать scheduler
 init_scheduler()
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ МОНИТОРИНГА (отложенная, чтобы избежать build-time errors)
+# ============================================================================
+
+def init_monitoring():
+    """Инициализировать систему мониторинга при запуске приложения"""
+    global notification_manager, blockage_detector
+
+    try:
+        notification_manager = NotificationManager()
+        blockage_detector = BlockageDetector()
+        logger.info("✅ Система мониторинга инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации мониторинга: {str(e)}")
+
+# Инициализировать мониторинг
+init_monitoring()
 
 # CORS поддержка для Chrome расширения и YouTube
 try:
@@ -1095,20 +1117,21 @@ def get_subtitles():
             )
 
             # Проверить нужно ли отправить алерт
-            risk_score = blockage_detector.calculate_risk_score()
-            should_alert, severity = blockage_detector.should_send_alert()
+            if blockage_detector and notification_manager:
+                risk_score = blockage_detector.calculate_risk_score()
+                should_alert, severity = blockage_detector.should_send_alert()
 
-            if should_alert:
-                alert_data = {
-                    'status_code': status_code,
-                    'error_type': error_type,
-                    'consecutive_failures': error_tracker.consecutive_failures,
-                    'error_rate': (request_monitor.failed_requests_today / max(request_monitor.total_requests_today, 1)) * 100,
-                    'risk_score': risk_score,
-                    'has_429': error_tracker.has_429(),
-                    'has_403': error_tracker.has_403()
-                }
-                notification_manager.send_telegram_alert(severity, alert_data)
+                if should_alert:
+                    alert_data = {
+                        'status_code': status_code,
+                        'error_type': error_type,
+                        'consecutive_failures': error_tracker.consecutive_failures,
+                        'error_rate': (request_monitor.failed_requests_today / max(request_monitor.total_requests_today, 1)) * 100,
+                        'risk_score': risk_score,
+                        'has_429': error_tracker.has_429(),
+                        'has_403': error_tracker.has_403()
+                    }
+                    notification_manager.send_telegram_alert(severity, alert_data)
 
             return jsonify({
                 "success": False,
@@ -1449,8 +1472,15 @@ def get_detailed_status():
     """
     try:
         stats = request_monitor.get_stats()
-        risk_score = blockage_detector.calculate_risk_score()
-        severity = blockage_detector.get_severity()
+
+        # Проверить что мониторинг инициализирован
+        if blockage_detector:
+            risk_score = blockage_detector.calculate_risk_score()
+            severity = blockage_detector.get_severity()
+        else:
+            risk_score = 0
+            severity = 'healthy'
+            logger.warning("⚠️ BlockageDetector не инициализирован")
 
         daily_stats = request_monitor.get_daily_stats()
 
