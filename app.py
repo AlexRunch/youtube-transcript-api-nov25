@@ -309,12 +309,15 @@ class NotificationManager:
     Управляет отправкой уведомлений в Telegram
     """
     def __init__(self):
-        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
         self.enabled = os.getenv('ENABLE_TELEGRAM_ALERTS', 'true').lower() == 'true'
 
         self.last_alert_time = {}  # {alert_type: timestamp}
-        self.alert_debounce_minutes = int(os.getenv('ALERT_DEBOUNCE_MINUTES', '5'))
+        try:
+            self.alert_debounce_minutes = int(os.getenv('ALERT_DEBOUNCE_MINUTES', '5'))
+        except (ValueError, TypeError):
+            self.alert_debounce_minutes = 5
         self.lock = threading.Lock()
 
     def send_telegram_alert(self, severity, message):
