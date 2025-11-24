@@ -24,6 +24,10 @@ from queue import Queue
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+import requests
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # Попытка импортировать proxy config
 try:
@@ -47,6 +51,78 @@ logging.basicConfig(
     format='[%(asctime)s] %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# ERROR TRACKING И BLOCKAGE DETECTION
+# ============================================================================
+
+class ErrorTracker:
+    """
+    Отслеживает ошибки от YouTube API и обнаруживает признаки блокировки
+    """
+    def __init__(self):
+        self.errors = []  # История последних 100 ошибок
+        self.http_429_count = 0  # Количество "Too Many Requests"
+        self.http_403_count = 0  # Количество "Forbidden"
+        self.timeout_count = 0  # Количество timeouts
+        self.consecutive_failures = 0  # Ошибки подряд
+        self.last_error_time = None
+        self.lock = threading.Lock()
+        self.error_window_minutes = 60  # Окно для подсчета ошибок
+
+    def record_error(self, error_type, status_code=None, response_text="", video_id=""):
+        """Записать ошибку"""
+        with self.lock:
+            error_info = {
+                'timestamp': time.time(),
+                'error_type': error_type,
+                'status_code': status_code,
+                'response_text': response_text[:100],  # Первые 100 символов
+                'video_id': video_id
+            }
+
+            self.errors.append(error_info)
+
+            # Хранить только последние 100 ошибок
+            if len(self.errors) > 100:
+                self.errors.pop(0)
+
+            self.last_error_time = time.time()
+            self.consecutive_failures += 1
+
+            # Подсчет типов ошибок
+            if status_code == 429:
+                self.http_429_count += 1
+            elif status_code == 403:
+                self.http_403_count += 1
+            elif 'timeout' in error_type.lower():
+                self.timeout_count += 1
+
+    def reset_consecutive_failures(self):
+        """Сброс счетчика ошибок подряд при успехе"""
+        with self.lock:
+            self.consecutive_failures = 0
+
+    def get_error_rate(self):
+        """Получить процент ошибок за последний час"""
+        with self.lock:
+            now = time.time()
+            recent_errors = [e for e in self.errors
+                           if now - e['timestamp'] < self.error_window_minutes * 60]
+            return len(recent_errors)
+
+    def has_429(self):
+        """Была ли обнаружена HTTP 429?"""
+        with self.lock:
+            return self.http_429_count > 0
+
+    def has_403(self):
+        """Была ли обнаружена HTTP 403?"""
+        with self.lock:
+            return self.http_403_count > 0
+
+# Глобальный tracker ошибок
+error_tracker = ErrorTracker()
 
 # ============================================================================
 # RATE LIMITING И КОНТРОЛЬ ОДНОВРЕМЕННЫХ ЗАПРОСОВ К YOUTUBE
@@ -83,7 +159,7 @@ youtube_rate_limiter = YouTubeRateLimiter(min_interval=0.5)
 # ============================================================================
 class RequestMonitor:
     """
-    Мониторит количество запросов к YouTube для раннего обнаружения проблем.
+    Мониторит количество запросов к YouTube и отслеживает ошибки.
     """
     def __init__(self):
         self.requests_per_minute = 0
@@ -93,7 +169,21 @@ class RequestMonitor:
         self.lock = threading.Lock()
         self.request_log = []  # Log последних 100 запросов
 
-    def log_youtube_request(self, video_id, endpoint, lang=None, status='success'):
+        # Новое: отслеживание ошибок
+        self.total_requests_today = 0
+        self.successful_requests_today = 0
+        self.failed_requests_today = 0
+        self.error_breakdown = {}  # {429: count, 403: count, ...}
+        self.languages_today = {}  # {en: count, ru: count, ...}
+        self.daily_reset_time = self._get_reset_time()
+
+    def _get_reset_time(self):
+        """Получить время когда нужно сбросить дневную статистику (00:00 UTC)"""
+        now = datetime.utcnow()
+        return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+    def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
+                           response_time_ms=0, error_type=None, status_code=None):
         """Логировать запрос к YouTube"""
         with self.lock:
             now = time.time()
@@ -108,8 +198,20 @@ class RequestMonitor:
                 self.requests_per_hour = 0
                 self.last_reset_hour = now
 
+            # Сбросить дневную статистику если прошли сутки
+            if now > self.daily_reset_time:
+                self._reset_daily_stats()
+                self.daily_reset_time = self._get_reset_time()
+
             self.requests_per_minute += 1
             self.requests_per_hour += 1
+
+            # Новое: дневная статистика
+            self.total_requests_today += 1
+            if status == 'success':
+                self.successful_requests_today += 1
+            else:
+                self.failed_requests_today += 1
 
             # Логировать в список
             request_info = {
@@ -117,13 +219,25 @@ class RequestMonitor:
                 'video_id': video_id,
                 'endpoint': endpoint,
                 'lang': lang,
-                'status': status
+                'status': status,
+                'response_time_ms': response_time_ms,
+                'error_type': error_type,
+                'status_code': status_code
             }
             self.request_log.append(request_info)
 
             # Хранить только последние 100 запросов
             if len(self.request_log) > 100:
                 self.request_log.pop(0)
+
+            # Подсчет ошибок по типам
+            if error_type:
+                error_key = f"{status_code}" if status_code else error_type
+                self.error_breakdown[error_key] = self.error_breakdown.get(error_key, 0) + 1
+
+            # Подсчет языков
+            if lang:
+                self.languages_today[lang] = self.languages_today.get(lang, 0) + 1
 
             # ⚠️ Предупреждение если слишком много запросов
             if self.requests_per_minute > 10:
@@ -132,22 +246,54 @@ class RequestMonitor:
             if self.requests_per_hour > 100:
                 logger.error(f"🔴 КРИТИЧНО: {self.requests_per_hour} запросов в час! YouTube заблокирует!")
 
+    def _reset_daily_stats(self):
+        """Сброс дневной статистики"""
+        self.total_requests_today = 0
+        self.successful_requests_today = 0
+        self.failed_requests_today = 0
+        self.error_breakdown = {}
+        self.languages_today = {}
+
     def get_stats(self):
         """Получить статистику"""
         with self.lock:
             return {
                 'requests_per_minute': self.requests_per_minute,
                 'requests_per_hour': self.requests_per_hour,
-                'recent_requests': self.request_log[-10:],  # Последние 10
-                'status': self._get_health_status()
+                'recent_requests': self.request_log[-10:],
+                'status': self._get_health_status(),
+                'error_breakdown': self.error_breakdown.copy(),
+                'total_requests_today': self.total_requests_today,
+                'successful_requests_today': self.successful_requests_today,
+                'failed_requests_today': self.failed_requests_today,
+                'languages_today': self.languages_today.copy()
+            }
+
+    def get_daily_stats(self):
+        """Получить дневную статистику"""
+        with self.lock:
+            success_rate = 0
+            if self.total_requests_today > 0:
+                success_rate = (self.successful_requests_today / self.total_requests_today) * 100
+
+            return {
+                'date': datetime.utcnow().strftime('%Y-%m-%d'),
+                'total_requests': self.total_requests_today,
+                'successful': self.successful_requests_today,
+                'failed': self.failed_requests_today,
+                'success_rate': success_rate,
+                'error_breakdown': self.error_breakdown.copy(),
+                'languages': self.languages_today.copy()
             }
 
     def _get_health_status(self):
         """Определить здоровье системы"""
-        if self.requests_per_minute > 10:
-            return 'warning'
-        elif self.requests_per_hour > 100:
+        if error_tracker.has_429() or error_tracker.consecutive_failures >= 8:
+            return 'blocked'
+        elif error_tracker.has_403() or error_tracker.consecutive_failures >= 5:
             return 'critical'
+        elif self.requests_per_minute > 10 or self.failed_requests_today > 20:
+            return 'warning'
         else:
             return 'healthy'
 
@@ -155,9 +301,308 @@ class RequestMonitor:
 request_monitor = RequestMonitor()
 
 # ============================================================================
+# NOTIFICATION MANAGER (Telegram + Email)
+# ============================================================================
+
+class NotificationManager:
+    """
+    Управляет отправкой уведомлений в Telegram
+    """
+    def __init__(self):
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        self.enabled = os.getenv('ENABLE_TELEGRAM_ALERTS', 'true').lower() == 'true'
+
+        self.last_alert_time = {}  # {alert_type: timestamp}
+        self.alert_debounce_minutes = int(os.getenv('ALERT_DEBOUNCE_MINUTES', '5'))
+        self.lock = threading.Lock()
+
+    def send_telegram_alert(self, severity, message):
+        """Отправить алерт в Telegram (асинхронно в background)"""
+        if not self.enabled or not self.telegram_token or not self.telegram_chat_id:
+            logger.warning("⚠️ Telegram не настроен (TOKEN или CHAT_ID отсутствуют)")
+            return
+
+        # Проверить дебаунсинг (не отправлять часто)
+        with self.lock:
+            if severity in self.last_alert_time:
+                elapsed = time.time() - self.last_alert_time[severity]
+                if elapsed < self.alert_debounce_minutes * 60:
+                    logger.info(f"ℹ️ Пропуск дублирующегося алерта {severity} (дебаунсинг)")
+                    return
+
+            self.last_alert_time[severity] = time.time()
+
+        # Отправить в фоне (не блокировать главный поток)
+        threading.Thread(
+            target=self._send_telegram_background,
+            args=(severity, message),
+            daemon=True
+        ).start()
+
+    def _send_telegram_background(self, severity, message):
+        """Отправить сообщение в Telegram (фоновый поток)"""
+        try:
+            url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+
+            # Форматирование сообщения
+            formatted_message = self._format_message(severity, message)
+
+            payload = {
+                'chat_id': self.telegram_chat_id,
+                'text': formatted_message,
+                'parse_mode': 'HTML'
+            }
+
+            response = requests.post(url, json=payload, timeout=10)
+
+            if response.status_code == 200:
+                logger.info(f"✅ Telegram алерт отправлен ({severity})")
+            else:
+                logger.error(f"❌ Ошибка отправки Telegram: {response.text}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке в Telegram: {str(e)}")
+
+    def _format_message(self, severity, message):
+        """Форматировать сообщение для Telegram"""
+        if isinstance(message, dict):
+            # Форматировать из словаря
+            formatted = self._format_alert_dict(severity, message)
+        else:
+            # Строка
+            formatted = str(message)
+
+        return formatted
+
+    def _format_alert_dict(self, severity, data):
+        """Форматировать алерт из словаря"""
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+
+        if severity == 'blocked':
+            return f"""🚨 <b>YOUTUBE БЛОКИРОВКА ОБНАРУЖЕНА!</b>
+
+<b>⚠️ СТАТУС:</b> BLOCKED (полная блокировка)
+├─ HTTP код: {data.get('status_code', 'N/A')}
+├─ Ошибок подряд: {data.get('consecutive_failures', 'N/A')}
+└─ Error rate: {data.get('error_rate', 0):.1f}%
+
+<b>🔴 РИСК:</b> КРИТИЧНЫЙ ({data.get('risk_score', 0)}/100)
+
+<b>⏱️ ДЕЙСТВУЙТЕ НЕМЕДЛЕННО:</b>
+1. Включить proxy сервис
+2. Или перезагрузить на Railway
+3. Проверить /api/status
+
+Время: {timestamp}"""
+
+        elif severity == 'critical':
+            return f"""🔴 <b>КРИТИЧНАЯ ОШИБКА!</b>
+
+<b>⚠️ СТАТУС:</b> CRITICAL
+├─ HTTP код: {data.get('status_code', 'N/A')}
+├─ Ошибок подряд: {data.get('consecutive_failures', 'N/A')}
+└─ Error rate: {data.get('error_rate', 0):.1f}%
+
+<b>🟠 РИСК:</b> ВЫСОКИЙ ({data.get('risk_score', 0)}/100)
+
+<b>⏱️ Действуйте быстро (15 минут):</b>
+1. Включить proxy
+2. Или снизить нагрузку
+
+Время: {timestamp}"""
+
+        elif severity == 'warning':
+            return f"""⚠️ <b>ВНИМАНИЕ!</b>
+
+<b>📊 СТАТУС:</b> WARNING
+├─ Error rate: {data.get('error_rate', 0):.1f}%
+└─ HTTP 429 detected: {data.get('has_429', False)}
+
+<b>🟡 РИСК:</b> СРЕДНИЙ ({data.get('risk_score', 0)}/100)
+
+<b>💡 Рекомендация:</b>
+Включить proxy в течение часа
+
+Время: {timestamp}"""
+
+        else:
+            return str(data)
+
+# Глобальный менеджер уведомлений
+notification_manager = NotificationManager()
+
+# ============================================================================
+# BLOCKAGE DETECTOR (обнаружение блокировки)
+# ============================================================================
+
+class BlockageDetector:
+    """
+    Анализирует паттерны ошибок и определяет риск блокировки YouTube
+    """
+    def __init__(self):
+        self.last_risk_score = 0
+        self.last_severity = 'healthy'
+        self.consecutive_critical_alerts = 0
+        self.lock = threading.Lock()
+
+    def calculate_risk_score(self):
+        """Вычислить risk score (0-100)"""
+        with self.lock:
+            score = 0
+
+            # HTTP 429 - максимальный приоритет
+            if error_tracker.has_429():
+                score += 100
+                logger.error("🔴 HTTP 429 обнаружена - критическая блокировка!")
+
+            # HTTP 403
+            if error_tracker.has_403():
+                score += 80
+                logger.warning("🟠 HTTP 403 обнаружена - предупреждение")
+
+            # Ошибки подряд
+            consecutive = error_tracker.consecutive_failures
+            if consecutive >= 8:
+                score += 50
+            elif consecutive >= 5:
+                score += 30
+            elif consecutive >= 3:
+                score += 10
+
+            # Error rate
+            stats = request_monitor.get_stats()
+            total = stats.get('total_requests_today', 0) or stats.get('requests_per_hour', 0)
+            failed = stats.get('failed_requests_today', 0)
+
+            if total > 10:
+                error_rate = (failed / total) * 100
+                if error_rate > 50:
+                    score += 20
+                elif error_rate > 20:
+                    score += 10
+
+            # Ограничить максимум 100
+            score = min(score, 100)
+            self.last_risk_score = score
+
+            return score
+
+    def get_severity(self):
+        """Определить severity уровень"""
+        score = self.last_risk_score
+
+        if error_tracker.has_429() or error_tracker.consecutive_failures >= 8:
+            return 'blocked'
+        elif error_tracker.has_403() or error_tracker.consecutive_failures >= 5 or score >= 50:
+            return 'critical'
+        elif score >= 20:
+            return 'warning'
+        else:
+            return 'healthy'
+
+    def should_send_alert(self):
+        """Нужно ли отправить алерт?"""
+        with self.lock:
+            severity = self.get_severity()
+
+            # Всегда отправляем critical и выше
+            if severity in ['critical', 'blocked']:
+                return True, severity
+
+            # Warning отправляем 1 раз
+            if severity == 'warning' and self.last_severity != 'warning':
+                return True, severity
+
+            return False, severity
+
+# Глобальный детектор
+blockage_detector = BlockageDetector()
+
+# ============================================================================
+# DAILY REPORT GENERATOR
+# ============================================================================
+
+def generate_daily_report():
+    """Генерировать и отправить ежедневный отчет"""
+    try:
+        stats = request_monitor.get_daily_stats()
+
+        if stats['total_requests'] == 0:
+            logger.info("📊 Нет запросов за сегодня для отчета")
+            return
+
+        # Сформировать сообщение
+        top_langs = sorted(stats['languages'].items(), key=lambda x: x[1], reverse=True)[:3]
+        top_errors = sorted(stats['error_breakdown'].items(), key=lambda x: x[1], reverse=True)
+
+        langs_str = '\n'.join([f"   🌍 {lang}: {count}" for lang, count in top_langs])
+        errors_str = '\n'.join([f"   ❌ {error}: {count}" for error, count in top_errors]) if top_errors else "   Нет ошибок ✅"
+
+        message = f"""📊 <b>ЕЖЕДНЕВНЫЙ ОТЧЕТ | {stats['date']}</b>
+
+<b>✅ СТАТИСТИКА:</b>
+   Всего: {stats['total_requests']}
+   Успешно: {stats['successful']} ({stats['success_rate']:.1f}%)
+   Ошибок: {stats['failed']}
+
+<b>🌍 ТОП ЯЗЫКИ:</b>
+{langs_str}
+
+<b>⚠️ ОШИБКИ:</b>
+{errors_str}
+
+<b>🟢 YOUTUBE:</b> HEALTHY
+Рекомендация: Все хорошо 👍"""
+
+        # Отправить
+        notification_manager.send_telegram_alert('info', message)
+        logger.info("📊 Ежедневный отчет отправлен")
+
+        # Сбросить статистику для нового дня
+        request_monitor._reset_daily_stats()
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при генерировании отчета: {str(e)}")
+
+# ============================================================================
 # ИНИЦИАЛИЗАЦИЯ FLASK
 # ============================================================================
 app = Flask(__name__)
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ ПЛАНИРОВЩИКА для ежедневных отчетов
+# ============================================================================
+
+def init_scheduler():
+    """Инициализировать APScheduler для ежедневных отчетов"""
+    if os.getenv('ENABLE_DAILY_REPORTS', 'true').lower() != 'true':
+        logger.info("ℹ️ Ежедневные отчеты отключены")
+        return
+
+    try:
+        scheduler = BackgroundScheduler(daemon=True)
+
+        # Получить время из переменных окружения (по умолчанию 18:00 UTC)
+        report_time = os.getenv('DAILY_REPORT_TIME', '18:00')
+        hour, minute = map(int, report_time.split(':'))
+
+        # Зарегистрировать задачу
+        scheduler.add_job(
+            func=generate_daily_report,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone='UTC'),
+            id='daily_report',
+            name='Daily Statistics Report',
+            replace_existing=True
+        )
+
+        scheduler.start()
+        logger.info(f"✅ APScheduler запущен. Ежедневный отчет в {report_time} UTC")
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка инициализации scheduler: {str(e)}")
+
+# Инициализировать scheduler
+init_scheduler()
 
 # CORS поддержка для Chrome расширения и YouTube
 try:
@@ -581,6 +1026,14 @@ def get_subtitles():
             # Получаем реальный язык который был использован
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
 
+            # ✅ ПОСЛЕ успешного получения субтитров
+            error_tracker.reset_consecutive_failures()  # Сброс счетчика ошибок
+            request_monitor.log_youtube_request(
+                video_id, 'POST', language,
+                status='success',
+                response_time_ms=int(total_duration * 1000)
+            )
+
             return jsonify({
                 "success": True,
                 "videoId": video_id,
@@ -593,6 +1046,12 @@ def get_subtitles():
 
         except TranscriptsDisabled:
             logger.error(f"❌ Субтитры отключены для видео {video_id}")
+            request_monitor.log_youtube_request(
+                video_id, 'POST', language,
+                status='error',
+                error_type='TranscriptsDisabled',
+                status_code=403
+            )
             return jsonify({
                 "success": False,
                 "error": "Transcripts are disabled for this video"
@@ -600,6 +1059,12 @@ def get_subtitles():
 
         except VideoUnavailable:
             logger.error(f"❌ Видео недоступно: {video_id}")
+            request_monitor.log_youtube_request(
+                video_id, 'POST', language,
+                status='error',
+                error_type='VideoUnavailable',
+                status_code=404
+            )
             return jsonify({
                 "success": False,
                 "error": "Video is unavailable"
@@ -607,6 +1072,41 @@ def get_subtitles():
 
         except Exception as e:
             logger.error(f"❌ Ошибка получения субтитров: {str(e)}")
+
+            # 🆕 НОВОЕ: Отслеживание ошибок и отправка алертов
+            error_type = type(e).__name__
+            status_code = getattr(e, 'status_code', None)
+
+            error_tracker.record_error(
+                error_type=error_type,
+                status_code=status_code,
+                response_text=str(e),
+                video_id=video_id
+            )
+
+            request_monitor.log_youtube_request(
+                video_id, 'POST', language,
+                status='error',
+                error_type=error_type,
+                status_code=status_code
+            )
+
+            # Проверить нужно ли отправить алерт
+            risk_score = blockage_detector.calculate_risk_score()
+            should_alert, severity = blockage_detector.should_send_alert()
+
+            if should_alert:
+                alert_data = {
+                    'status_code': status_code,
+                    'error_type': error_type,
+                    'consecutive_failures': error_tracker.consecutive_failures,
+                    'error_rate': (request_monitor.failed_requests_today / max(request_monitor.total_requests_today, 1)) * 100,
+                    'risk_score': risk_score,
+                    'has_429': error_tracker.has_429(),
+                    'has_403': error_tracker.has_403()
+                }
+                notification_manager.send_telegram_alert(severity, alert_data)
+
             return jsonify({
                 "success": False,
                 "error": f"Failed to fetch transcripts: {str(e)}"
@@ -937,6 +1437,80 @@ def get_subtitles_test(video_id):
             "status": "error",
             "error": "Internal server error"
         }), 500
+
+
+@app.route('/api/status', methods=['GET'])
+def get_detailed_status():
+    """
+    Детальный статус здоровья сервера и YouTube блокировки
+    """
+    try:
+        stats = request_monitor.get_stats()
+        risk_score = blockage_detector.calculate_risk_score()
+        severity = blockage_detector.get_severity()
+
+        daily_stats = request_monitor.get_daily_stats()
+
+        return jsonify({
+            "success": True,
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+
+            "status": severity,
+            "risk_score": risk_score,
+
+            "youtube_metrics": {
+                "requests_last_hour": stats['requests_per_hour'],
+                "requests_last_minute": stats['requests_per_minute'],
+                "error_rate": (daily_stats['failed'] / max(daily_stats['total_requests'], 1) * 100) if daily_stats['total_requests'] > 0 else 0,
+                "http_429_detected": error_tracker.has_429(),
+                "http_403_detected": error_tracker.has_403(),
+                "consecutive_failures": error_tracker.consecutive_failures,
+                "error_breakdown": stats['error_breakdown']
+            },
+
+            "daily_stats": {
+                "date": daily_stats['date'],
+                "total_requests": daily_stats['total_requests'],
+                "successful": daily_stats['successful'],
+                "failed": daily_stats['failed'],
+                "success_rate": daily_stats['success_rate'],
+                "top_languages": dict(sorted(daily_stats['languages'].items(),
+                                             key=lambda x: x[1],
+                                             reverse=True)[:5])
+            },
+
+            "alerts": [
+                {
+                    "time": datetime.utcfromtimestamp(req['timestamp']).isoformat() + 'Z',
+                    "status_code": req['status_code'],
+                    "error_type": req['error_type'],
+                    "video_id": req['video_id']
+                }
+                for req in stats['recent_requests']
+                if req['status'] != 'success'
+            ],
+
+            "recommendation": _get_recommendation(severity, risk_score)
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /api/status: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+def _get_recommendation(severity, risk_score):
+    """Дать рекомендацию на основе severity"""
+    if severity == 'blocked':
+        return "🚨 КРИТИЧНО: YouTube полностью заблокировал сервер. Включите proxy немедленно или перезагрузитесь."
+    elif severity == 'critical':
+        return "🔴 СРОЧНО: Включите proxy в течение 15 минут, иначе YouTube заблокирует."
+    elif severity == 'warning':
+        return "⚠️ Включите proxy в течение часа, чтобы избежать блокировки."
+    else:
+        return "✅ Все хорошо, мониторинг включен."
 
 
 @app.route('/api/monitoring', methods=['GET'])
