@@ -25,7 +25,7 @@ from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -179,7 +179,7 @@ class RequestMonitor:
 
     def _get_reset_time(self):
         """Получить время когда нужно сбросить дневную статистику (00:00 UTC)"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
@@ -277,7 +277,7 @@ class RequestMonitor:
                 success_rate = (self.successful_requests_today / self.total_requests_today) * 100
 
             return {
-                'date': datetime.utcnow().strftime('%Y-%m-%d'),
+                'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
                 'total_requests': self.total_requests_today,
                 'successful': self.successful_requests_today,
                 'failed': self.failed_requests_today,
@@ -380,7 +380,7 @@ class NotificationManager:
 
     def _format_alert_dict(self, severity, data):
         """Форматировать алерт из словаря"""
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
 
         if severity == 'blocked':
             return f"""🚨 <b>YOUTUBE БЛОКИРОВКА ОБНАРУЖЕНА!</b>
@@ -932,7 +932,7 @@ def health_check():
     return jsonify({
         "ok": True,
         "service": "YouTube Subtitles API",
-        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }), 200
 
 
@@ -1486,7 +1486,7 @@ def get_detailed_status():
 
         return jsonify({
             "success": True,
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
 
             "status": severity,
             "risk_score": risk_score,
