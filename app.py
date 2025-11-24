@@ -1546,6 +1546,93 @@ def _get_recommendation(severity, risk_score):
         return "✅ Все хорошо, мониторинг включен."
 
 
+@app.route('/api/send-report', methods=['POST', 'GET'])
+def send_report_now():
+    """
+    🚀 Принудительная отправка ежедневного отчета в Telegram прямо сейчас
+
+    Использование:
+    - GET/POST /api/send-report
+
+    Отправляет текущую статистику за день в Telegram (даже если 0 запросов)
+    """
+    try:
+        if not notification_manager:
+            return jsonify({
+                "success": False,
+                "error": "NotificationManager не инициализирован"
+            }), 500
+
+        if not notification_manager.telegram_token or not notification_manager.telegram_chat_id:
+            return jsonify({
+                "success": False,
+                "error": "Telegram не настроен (TOKEN или CHAT_ID отсутствуют)"
+            }), 400
+
+        # Получить статистику
+        stats = request_monitor.get_daily_stats()
+
+        # Сформировать отчет (даже если 0 запросов)
+        top_langs = sorted(stats['languages'].items(), key=lambda x: x[1], reverse=True)[:3]
+        top_errors = sorted(stats['error_breakdown'].items(), key=lambda x: x[1], reverse=True)
+
+        langs_str = '\n'.join([f"   🌍 {lang}: {count}" for lang, count in top_langs]) if top_langs else "   Нет данных"
+        errors_str = '\n'.join([f"   ❌ {error}: {count}" for error, count in top_errors]) if top_errors else "   Нет ошибок ✅"
+
+        # Добавить информацию о статусе системы
+        if blockage_detector:
+            risk_score = blockage_detector.calculate_risk_score()
+            severity = blockage_detector.get_severity()
+            status_emoji = {
+                'healthy': '🟢',
+                'warning': '🟡',
+                'critical': '🟠',
+                'blocked': '🔴'
+            }.get(severity, '🟢')
+            status_text = severity.upper()
+        else:
+            risk_score = 0
+            status_emoji = '🟢'
+            status_text = 'HEALTHY'
+
+        message = f"""📊 <b>ЕЖЕДНЕВНЫЙ ОТЧЕТ | {stats['date']}</b>
+
+<b>✅ СТАТИСТИКА:</b>
+   Всего: {stats['total_requests']}
+   Успешно: {stats['successful']} ({stats['success_rate']:.1f}%)
+   Ошибок: {stats['failed']}
+
+<b>🌍 ТОП ЯЗЫКИ:</b>
+{langs_str}
+
+<b>⚠️ ОШИБКИ:</b>
+{errors_str}
+
+<b>{status_emoji} YOUTUBE:</b> {status_text}
+   Risk Score: {risk_score}/100
+   Рекомендация: {_get_recommendation(severity, risk_score)}
+
+<i>⚡ Отчет отправлен по запросу через /api/send-report</i>"""
+
+        # Отправить (используем severity='info' чтобы не блокировался debounce)
+        notification_manager.send_telegram_alert('manual_report', message)
+        logger.info("📊 Ручной отчет отправлен через /api/send-report")
+
+        return jsonify({
+            "success": True,
+            "message": "Report sent to Telegram",
+            "stats": stats,
+            "telegram_configured": True
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке отчета: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route('/api/monitoring', methods=['GET'])
 def get_monitoring():
     """
