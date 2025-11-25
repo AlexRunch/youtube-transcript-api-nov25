@@ -29,19 +29,6 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# Попытка импортировать proxy config
-try:
-    from youtube_transcript_api.proxies import WebshareProxyConfig
-    PROXY_CONFIG_AVAILABLE = True
-    PROXY_TYPE = "webshare"
-except ImportError:
-    try:
-        from youtube_transcript_api.proxies import GenericProxyConfig
-        PROXY_CONFIG_AVAILABLE = True
-        PROXY_TYPE = "generic"
-    except ImportError:
-        PROXY_CONFIG_AVAILABLE = False
-        PROXY_TYPE = None
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
@@ -659,44 +646,27 @@ except ImportError:
 PORT = int(os.getenv('PORT', 5000))
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-# Конфигурация прокси для Webshare (решает проблему блокировки Railway IP)
-# Временно отключаем прокси для тестирования
-WEBSHARE_USERNAME = None  # os.getenv('WEBSHARE_PROXY_USERNAME', None)
-WEBSHARE_PASSWORD = None  # os.getenv('WEBSHARE_PROXY_PASSWORD', None)
+# ============================================================================
+# КОНФИГУРАЦИЯ ПРОКСИ ДЛЯ WEBSHARE (решает проблему блокировки Railway IP)
+# ============================================================================
+WEBSHARE_PROXY_ADDRESS = os.getenv('WEBSHARE_PROXY_ADDRESS', None)  # например "63.141.62.166:6459"
+WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)      # например "hhlnixdt"
+WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)      # например "54tssmyl37of"
 
-# Инициализируем YouTube API с прокси если доступны credentials
-youtube_api = None
-if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
-    try:
-        if PROXY_CONFIG_AVAILABLE and PROXY_TYPE == "webshare":
-            # Используем WebshareProxyConfig если доступна
-            proxy_config = WebshareProxyConfig(
-                proxy_username=WEBSHARE_USERNAME,
-                proxy_password=WEBSHARE_PASSWORD
-            )
-            youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            logger.info("✅ YouTube API инициализирован с Webshare прокси (WebshareProxyConfig)")
-        elif PROXY_CONFIG_AVAILABLE and PROXY_TYPE == "generic":
-            # Используем GenericProxyConfig для старых версий или других провайдеров
-            # Формат URL: http://username:password@host:port
-            # Webshare может требовать порт 3128 или 80
-            proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@proxy.webshare.io:3128"
-            proxy_config = GenericProxyConfig(http_proxy=proxy_url, https_proxy=proxy_url)
-            youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            logger.info("✅ YouTube API инициализирован с Webshare прокси (GenericProxyConfig на порту 3128)")
-        else:
-            # Если прокси конфиг не доступен, создаем обычный API
-            # Прокси может не быть поддержана в версии 0.6.1-0.6.2
-            logger.warning(f"⚠️ Proxy config не доступна (тип: {PROXY_TYPE}), используем обычный API")
-            youtube_api = YouTubeTranscriptApi()
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка инициализации прокси: {str(e)}, используем обычный API")
-        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
-        youtube_api = YouTubeTranscriptApi()
+# Создаем словарь прокси для requests (формат для youtube-transcript-api)
+proxies = None
+if WEBSHARE_PROXY_ADDRESS and WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
+    proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@{WEBSHARE_PROXY_ADDRESS}"
+    proxies = {
+        "http": proxy_url,
+        "https": proxy_url
+    }
+    logger.info(f"✅ Прокси настроен: {WEBSHARE_USERNAME}@{WEBSHARE_PROXY_ADDRESS}")
+    logger.info("🔒 YouTube запросы будут идти через Webshare Static Residential прокси")
 else:
-    youtube_api = YouTubeTranscriptApi()
-    if not WEBSHARE_USERNAME or not WEBSHARE_PASSWORD:
-        logger.warning("⚠️ Переменные окружения WEBSHARE_PROXY_USERNAME/PASSWORD не установлены")
+    logger.warning("⚠️ Прокси не настроен - используется прямое подключение к YouTube")
+    logger.warning("⚠️ Установите переменные окружения: WEBSHARE_PROXY_ADDRESS, WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD")
+    logger.warning("⚠️ Без прокси Railway IP может быть заблокирован YouTube")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -858,10 +828,10 @@ def get_available_languages(video_id):
     try:
         # Новый API использует .list() вместо .list_transcripts()
         try:
-            transcript_list = youtube_api.list(video_id)
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
         except AttributeError:
             # Fallback для старых версий
-            transcript_list = youtube_api.list_transcripts(video_id)
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
 
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
@@ -993,12 +963,8 @@ def get_subtitles():
             # Rate limiting перед YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
 
-            # Новый API использует .list() вместо .list_transcripts()
-            try:
-                transcript_list = youtube_api.list(video_id)
-            except AttributeError:
-                # Fallback для старых версий
-                transcript_list = youtube_api.list_transcripts(video_id)
+            # Получаем список транскриптов с прокси
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
@@ -1229,10 +1195,8 @@ def get_subtitles_v2(video_id):
             # Rate limiting перед YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
 
-            try:
-                transcript_list = youtube_api.list(video_id)
-            except AttributeError:
-                transcript_list = youtube_api.list_transcripts(video_id)
+            # Получаем список транскриптов с прокси
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
@@ -1358,10 +1322,8 @@ def get_subtitles_test(video_id):
             list_start = time.time()
             youtube_rate_limiter.wait_if_needed()
 
-            try:
-                transcript_list = youtube_api.list(video_id)
-            except AttributeError:
-                transcript_list = youtube_api.list_transcripts(video_id)
+            # Получаем список транскриптов с прокси
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
