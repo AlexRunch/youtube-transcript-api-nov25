@@ -653,11 +653,11 @@ WEBSHARE_PROXY_ADDRESS = os.getenv('WEBSHARE_PROXY_ADDRESS', None)  # напри
 WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)      # например "hhlnixdt"
 WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)      # например "54tssmyl37of"
 
-# Создаем словарь прокси для requests (формат для youtube-transcript-api)
-proxies = None
+# Создаем requests.Session с прокси для youtube-transcript-api
+http_client = requests.Session()
 if WEBSHARE_PROXY_ADDRESS and WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
     proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@{WEBSHARE_PROXY_ADDRESS}"
-    proxies = {
+    http_client.proxies = {
         "http": proxy_url,
         "https": proxy_url
     }
@@ -667,6 +667,9 @@ else:
     logger.warning("⚠️ Прокси не настроен - используется прямое подключение к YouTube")
     logger.warning("⚠️ Установите переменные окружения: WEBSHARE_PROXY_ADDRESS, WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD")
     logger.warning("⚠️ Без прокси Railway IP может быть заблокирован YouTube")
+
+# Создаем YouTube API client с http_client
+youtube_api = YouTubeTranscriptApi(http_client=http_client)
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -826,12 +829,8 @@ def format_subtitles_for_extension(transcript_list):
 def get_available_languages(video_id):
     """Получить список доступных языков для видео"""
     try:
-        # Новый API использует .list() вместо .list_transcripts()
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
-        except AttributeError:
-            # Fallback для старых версий
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
+        # Получаем список транскриптов через инстанс API (с прокси)
+        transcript_list = youtube_api.list(video_id)
 
         # Доступные языки (с автоматическими субтитрами и без)
         languages = []
@@ -963,8 +962,8 @@ def get_subtitles():
             # Rate limiting перед YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
 
-            # Получаем список транскриптов с прокси
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
+            # Получаем список транскриптов через API инстанс (с прокси)
+            transcript_list = youtube_api.list(video_id)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
@@ -1195,8 +1194,8 @@ def get_subtitles_v2(video_id):
             # Rate limiting перед YouTube API вызовом
             youtube_rate_limiter.wait_if_needed()
 
-            # Получаем список транскриптов с прокси
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
+            # Получаем список транскриптов через API инстанс (с прокси)
+            transcript_list = youtube_api.list(video_id)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
@@ -1322,8 +1321,8 @@ def get_subtitles_test(video_id):
             list_start = time.time()
             youtube_rate_limiter.wait_if_needed()
 
-            # Получаем список транскриптов с прокси
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
+            # Получаем список транскриптов через API инстанс (с прокси)
+            transcript_list = youtube_api.list(video_id)
 
             list_duration = time.time() - list_start
             logger.info(f"✅ Получен список транскриптов для {video_id} ({list_duration:.2f}сек)")
