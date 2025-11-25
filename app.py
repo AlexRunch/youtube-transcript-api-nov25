@@ -24,6 +24,7 @@ from queue import Queue
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import requests
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -649,27 +650,32 @@ DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 # ============================================================================
 # КОНФИГУРАЦИЯ ПРОКСИ ДЛЯ WEBSHARE (решает проблему блокировки Railway IP)
 # ============================================================================
-WEBSHARE_PROXY_ADDRESS = os.getenv('WEBSHARE_PROXY_ADDRESS', None)  # например "63.141.62.166:6459"
-WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)      # например "hhlnixdt"
-WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)      # например "54tssmyl37of"
+WEBSHARE_USERNAME = os.getenv('WEBSHARE_PROXY_USERNAME', None)  # например "hhlnixdt-residential-1"
+WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)  # например "54tssmyl37of"
 
-# Создаем requests.Session с прокси для youtube-transcript-api
-http_client = requests.Session()
-if WEBSHARE_PROXY_ADDRESS and WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
-    proxy_url = f"http://{WEBSHARE_USERNAME}:{WEBSHARE_PASSWORD}@{WEBSHARE_PROXY_ADDRESS}"
-    http_client.proxies = {
-        "http": proxy_url,
-        "https": proxy_url
-    }
-    logger.info(f"✅ Прокси настроен: {WEBSHARE_USERNAME}@{WEBSHARE_PROXY_ADDRESS}")
-    logger.info("🔒 YouTube запросы будут идти через Webshare Static Residential прокси")
+# Создаем YouTube API client с Webshare Rotating Residential прокси
+youtube_api = None
+if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
+    try:
+        # WebshareProxyConfig автоматически использует rotating residential прокси
+        # через endpoint p.webshare.io:80 с автоматической ротацией IP
+        proxy_config = WebshareProxyConfig(
+            proxy_username=WEBSHARE_USERNAME,
+            proxy_password=WEBSHARE_PASSWORD
+        )
+        youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+        logger.info(f"✅ Webshare Rotating Residential прокси настроен: {WEBSHARE_USERNAME}")
+        logger.info("🔄 IP адрес будет автоматически ротироваться на каждый запрос")
+        logger.info("🔒 YouTube запросы защищены от блокировки")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации WebshareProxyConfig: {str(e)}")
+        logger.warning("⚠️ Используем обычный API без прокси")
+        youtube_api = YouTubeTranscriptApi()
 else:
-    logger.warning("⚠️ Прокси не настроен - используется прямое подключение к YouTube")
-    logger.warning("⚠️ Установите переменные окружения: WEBSHARE_PROXY_ADDRESS, WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD")
+    logger.warning("⚠️ Webshare прокси не настроен - используется прямое подключение к YouTube")
+    logger.warning("⚠️ Установите переменные окружения: WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD")
     logger.warning("⚠️ Без прокси Railway IP может быть заблокирован YouTube")
-
-# Создаем YouTube API client с http_client
-youtube_api = YouTubeTranscriptApi(http_client=http_client)
+    youtube_api = YouTubeTranscriptApi()
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
