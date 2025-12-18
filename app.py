@@ -120,8 +120,9 @@ class YouTubeRateLimiter:
     Контролирует частоту запросов к YouTube чтобы избежать блокировки.
 
     Стратегия:
-    - Максимум 1 запрос к YouTube в 0.5 секунды (2 запроса в секунду)
-    - Это предотвращает блокировку из-за слишком частых запросов
+    - С rotating residential proxy: БЕЗ задержки (min_interval=0.0)
+      Каждый запрос идет с разного IP, блокировка невозможна
+    - Без proxy: 0.5 секунды между запросами (для защиты от блокировки)
     - При большом количестве пользователей запросы будут ставиться в очередь
     """
     def __init__(self, min_interval=0.5):
@@ -139,8 +140,8 @@ class YouTubeRateLimiter:
                 time.sleep(sleep_time)
             self.last_request_time = time.time()
 
-# Глобальный rate limiter для YouTube запросов
-youtube_rate_limiter = YouTubeRateLimiter(min_interval=0.5)
+# Глобальный rate limiter для YouTube запросов (будет инициализирован после определения proxy конфига)
+youtube_rate_limiter = None
 
 # ============================================================================
 # REQUEST MONITORING (для отслеживания YouTube API запросов)
@@ -168,7 +169,9 @@ class RequestMonitor:
     def _get_reset_time(self):
         """Получить время когда нужно сбросить дневную статистику (00:00 UTC)"""
         now = datetime.now(timezone.utc)
-        return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        tomorrow = now + timedelta(days=1)
+        reset_time = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        return reset_time.timestamp()
 
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
                            response_time_ms=0, error_type=None, status_code=None):
@@ -260,7 +263,7 @@ class RequestMonitor:
     def get_daily_stats(self):
         """Получить дневную статистику"""
         with self.lock:
-            success_rate = 0
+            success_rate = 0.0
             if self.total_requests_today > 0:
                 success_rate = (self.successful_requests_today / self.total_requests_today) * 100
 
@@ -523,15 +526,11 @@ def generate_daily_report():
 
         stats = request_monitor.get_daily_stats()
 
-        if stats['total_requests'] == 0:
-            logger.info("📊 Нет запросов за сегодня для отчета")
-            return
-
-        # Сформировать сообщение
+        # Сформировать сообщение (даже если 0 запросов)
         top_langs = sorted(stats['languages'].items(), key=lambda x: x[1], reverse=True)[:3]
         top_errors = sorted(stats['error_breakdown'].items(), key=lambda x: x[1], reverse=True)
 
-        langs_str = '\n'.join([f"   🌍 {lang}: {count}" for lang, count in top_langs])
+        langs_str = '\n'.join([f"   🌍 {lang}: {count}" for lang, count in top_langs]) if top_langs else "   Нет данных"
         errors_str = '\n'.join([f"   ❌ {error}: {count}" for error, count in top_errors]) if top_errors else "   Нет ошибок ✅"
 
         message = f"""📊 <b>ЕЖЕДНЕВНЫЙ ОТЧЕТ | {stats['date']}</b>
@@ -551,8 +550,8 @@ def generate_daily_report():
 Рекомендация: Все хорошо 👍"""
 
         # Отправить
-        notification_manager.send_telegram_alert('info', message)
-        logger.info("📊 Ежедневный отчет отправлен")
+        notification_manager.send_telegram_alert('daily_report', message)
+        logger.info(f"📊 Ежедневный отчет отправлен (запросов за день: {stats['total_requests']})")
 
         # Сбросить статистику для нового дня
         request_monitor._reset_daily_stats()
@@ -655,6 +654,8 @@ WEBSHARE_PASSWORD = os.getenv('WEBSHARE_PROXY_PASSWORD', None)  # наприме
 
 # Создаем YouTube API client с Webshare Rotating Residential прокси
 youtube_api = None
+proxy_enabled = False
+
 if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
     try:
         # WebshareProxyConfig автоматически использует rotating residential прокси
@@ -664,6 +665,7 @@ if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
             proxy_password=WEBSHARE_PASSWORD
         )
         youtube_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+        proxy_enabled = True
         logger.info(f"✅ Webshare Rotating Residential прокси настроен: {WEBSHARE_USERNAME}")
         logger.info("🔄 IP адрес будет автоматически ротироваться на каждый запрос")
         logger.info("🔒 YouTube запросы защищены от блокировки")
@@ -676,6 +678,19 @@ else:
     logger.warning("⚠️ Установите переменные окружения: WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD")
     logger.warning("⚠️ Без прокси Railway IP может быть заблокирован YouTube")
     youtube_api = YouTubeTranscriptApi()
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ RATE LIMITER (адаптивная стратегия)
+# ============================================================================
+# С rotating residential proxy - нет задержки (каждый запрос с разного IP)
+# Без proxy - задержка 0.5 сек для защиты от блокировки
+min_interval = 0.0 if proxy_enabled else 0.5
+youtube_rate_limiter = YouTubeRateLimiter(min_interval=min_interval)
+
+if proxy_enabled:
+    logger.info("⚡ Rate limiter: БЕЗ задержки (rotating residential proxy активен)")
+else:
+    logger.info(f"⏱️ Rate limiter: {min_interval}сек задержка (без proxy - защита от блокировки)")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
