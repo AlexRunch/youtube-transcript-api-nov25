@@ -151,17 +151,30 @@ class RequestMonitor:
     Мониторит количество запросов к YouTube и отслеживает ошибки.
     Сохраняет статистику в JSON файл для персистентности между перезапусками.
     """
-    def __init__(self, stats_file='data/stats.json'):
+    def __init__(self, stats_file=None):
         self.requests_per_minute = 0
         self.requests_per_hour = 0
         self.last_reset_minute = time.time()
         self.last_reset_hour = time.time()
         self.lock = threading.Lock()
         self.request_log = []  # Log последних 100 запросов
+
+        # Использовать абсолютный путь для stats файла
+        if stats_file is None:
+            # Получить директорию где находится app.py
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            stats_file = os.path.join(base_dir, 'data', 'stats.json')
+
         self.stats_file = stats_file
+        logger.info(f"📂 Stats file path: {self.stats_file}")
 
         # Создать директорию data/ если не существует
-        os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+        try:
+            stats_dir = os.path.dirname(self.stats_file)
+            os.makedirs(stats_dir, exist_ok=True)
+            logger.info(f"📂 Stats directory created/verified: {stats_dir}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания директории {stats_dir}: {str(e)}")
 
         # Новое: отслеживание ошибок (будет загружено из файла)
         self.total_requests_today = 0
@@ -227,8 +240,14 @@ class RequestMonitor:
 
             with open(self.stats_file, 'w') as f:
                 json.dump(data, f, indent=2)
+
+            # Логировать сохранение (но не на каждый запрос - слишком много логов)
+            # Логируем только каждый 10-й запрос
+            if self.total_requests_today % 10 == 0 or self.total_requests_today <= 3:
+                logger.info(f"💾 Статистика сохранена: {self.total_requests_today} запросов")
         except Exception as e:
-            logger.error(f"❌ Ошибка сохранения статистики: {str(e)}")
+            logger.error(f"❌ Ошибка сохранения статистики в {self.stats_file}: {str(e)}")
+            logger.error(f"📋 Stack trace: {traceback.format_exc()}")
 
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
                            response_time_ms=0, error_type=None, status_code=None):
