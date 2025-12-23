@@ -1121,7 +1121,7 @@ def get_subtitles():
             # ✅ ПОСЛЕ успешного получения субтитров
             error_tracker.reset_consecutive_failures()  # Сброс счетчика ошибок
             request_monitor.log_youtube_request(
-                video_id, 'POST', language,
+                video_id, 'POST', lang=language,
                 status='success',
                 response_time_ms=int(total_duration * 1000)
             )
@@ -1139,7 +1139,7 @@ def get_subtitles():
         except TranscriptsDisabled:
             logger.error(f"❌ Субтитры отключены для видео {video_id}")
             request_monitor.log_youtube_request(
-                video_id, 'POST', language,
+                video_id, 'POST', lang=language,
                 status='error',
                 error_type='TranscriptsDisabled',
                 status_code=403
@@ -1152,7 +1152,7 @@ def get_subtitles():
         except VideoUnavailable:
             logger.error(f"❌ Видео недоступно: {video_id}")
             request_monitor.log_youtube_request(
-                video_id, 'POST', language,
+                video_id, 'POST', lang=language,
                 status='error',
                 error_type='VideoUnavailable',
                 status_code=404
@@ -1177,7 +1177,7 @@ def get_subtitles():
             )
 
             request_monitor.log_youtube_request(
-                video_id, 'POST', language,
+                video_id, 'POST', lang=language,
                 status='error',
                 error_type=error_type,
                 status_code=status_code
