@@ -30,6 +30,14 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+# Supabase для персистентного хранилища статистики
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    print("⚠️ Supabase не установлен - используется локальный JSON файл")
+
 
 # ============================================================================
 # ЛОГИРОВАНИЕ
@@ -149,9 +157,9 @@ youtube_rate_limiter = None
 class RequestMonitor:
     """
     Мониторит количество запросов к YouTube и отслеживает ошибки.
-    Сохраняет статистику в JSON файл для персистентности между перезапусками.
+    Сохраняет статистику в Supabase (основное) и JSON файл (fallback).
     """
-    def __init__(self, stats_file=None):
+    def __init__(self, stats_file=None, supabase_client=None):
         self.requests_per_minute = 0
         self.requests_per_hour = 0
         self.last_reset_minute = time.time()
@@ -159,7 +167,10 @@ class RequestMonitor:
         self.lock = threading.Lock()
         self.request_log = []  # Log последних 100 запросов
 
-        # Использовать абсолютный путь для stats файла
+        # Supabase клиент для персистентного хранения
+        self.supabase = supabase_client
+
+        # Использовать абсолютный путь для stats файла (fallback)
         if stats_file is None:
             # Получить директорию где находится app.py
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -176,7 +187,7 @@ class RequestMonitor:
         except Exception as e:
             logger.error(f"❌ Ошибка создания директории {stats_dir}: {str(e)}")
 
-        # Новое: отслеживание ошибок (будет загружено из файла)
+        # Новое: отслеживание ошибок (будет загружено из Supabase или файла)
         self.total_requests_today = 0
         self.successful_requests_today = 0
         self.failed_requests_today = 0
@@ -184,7 +195,7 @@ class RequestMonitor:
         self.languages_today = {}  # {en: count, ru: count, ...}
         self.daily_reset_time = self._get_reset_time()
 
-        # Загрузить статистику из файла
+        # Загрузить статистику из Supabase или файла
         self._load_stats()
 
     def _get_reset_time(self):
@@ -195,7 +206,29 @@ class RequestMonitor:
         return reset_time.timestamp()
 
     def _load_stats(self):
-        """Загрузить статистику из JSON файла"""
+        """Загрузить статистику из Supabase (приоритет) или JSON файла (fallback)"""
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+        # Попытка 1: Загрузить из Supabase
+        if self.supabase:
+            try:
+                response = self.supabase.table('daily_stats').select('*').eq('date', today).execute()
+                if response.data and len(response.data) > 0:
+                    data = response.data[0]
+                    self.total_requests_today = data.get('total_requests', 0)
+                    self.successful_requests_today = data.get('successful', 0)
+                    self.failed_requests_today = data.get('failed', 0)
+                    self.error_breakdown = data.get('error_breakdown', {})
+                    self.languages_today = data.get('languages', {})
+                    logger.info(f"✅ Статистика загружена из Supabase: {self.total_requests_today} запросов за сегодня")
+                    return
+                else:
+                    logger.info(f"ℹ️ Данных за {today} в Supabase нет, начинаем с нуля")
+                    return
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка загрузки из Supabase: {str(e)}, пытаемся JSON")
+
+        # Попытка 2: Загрузить из JSON файла (fallback)
         try:
             if os.path.exists(self.stats_file):
                 with open(self.stats_file, 'r') as f:
@@ -203,7 +236,6 @@ class RequestMonitor:
 
                 # Проверить что данные за сегодняшний день
                 saved_date = data.get('date', '')
-                today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
                 if saved_date == today:
                     # Данные актуальны - загружаем
@@ -213,7 +245,7 @@ class RequestMonitor:
                     self.error_breakdown = data.get('error_breakdown', {})
                     self.languages_today = data.get('languages', {})
                     self.daily_reset_time = data.get('daily_reset_time', self._get_reset_time())
-                    logger.info(f"✅ Статистика загружена из файла: {self.total_requests_today} запросов за сегодня")
+                    logger.info(f"✅ Статистика загружена из JSON: {self.total_requests_today} запросов за сегодня")
                 else:
                     # Данные устарели - начинаем с нуля
                     logger.info(f"ℹ️ Статистика устарела ({saved_date} != {today}), начинаем новый день")
@@ -221,33 +253,42 @@ class RequestMonitor:
             else:
                 logger.info("ℹ️ Файл статистики не найден, начинаем с нуля")
         except Exception as e:
-            logger.error(f"❌ Ошибка загрузки статистики: {str(e)}")
+            logger.error(f"❌ Ошибка загрузки статистики из JSON: {str(e)}")
             logger.error(f"📋 Stack trace: {traceback.format_exc()}")
 
     def _save_stats(self):
-        """Сохранить статистику в JSON файл"""
+        """Сохранить статистику в Supabase (приоритет) и JSON файл (fallback)"""
         logger.info(f"🔍 DEBUG: _save_stats вызван - total={self.total_requests_today}, successful={self.successful_requests_today}, languages={self.languages_today}")
+
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        data = {
+            'date': today,
+            'total_requests': self.total_requests_today,
+            'successful': self.successful_requests_today,
+            'failed': self.failed_requests_today,
+            'error_breakdown': self.error_breakdown,
+            'languages': self.languages_today
+        }
+
+        # Попытка 1: Сохранить в Supabase (upsert - создать или обновить)
+        if self.supabase:
+            try:
+                self.supabase.table('daily_stats').upsert(data).execute()
+                # Логировать сохранение (но не на каждый запрос - слишком много логов)
+                if self.total_requests_today % 10 == 0 or self.total_requests_today <= 3:
+                    logger.info(f"💾 Статистика сохранена в Supabase: {self.total_requests_today} запросов")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения в Supabase: {str(e)}")
+
+        # Попытка 2: Сохранить в JSON (всегда, как fallback)
         try:
-            data = {
-                'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
-                'total_requests': self.total_requests_today,
-                'successful': self.successful_requests_today,
-                'failed': self.failed_requests_today,
-                'error_breakdown': self.error_breakdown,
-                'languages': self.languages_today,
-                'daily_reset_time': self.daily_reset_time,
-                'last_updated': time.time()
-            }
+            data['daily_reset_time'] = self.daily_reset_time
+            data['last_updated'] = time.time()
 
             with open(self.stats_file, 'w') as f:
                 json.dump(data, f, indent=2)
-
-            # Логировать сохранение (но не на каждый запрос - слишком много логов)
-            # Логируем только каждый 10-й запрос
-            if self.total_requests_today % 10 == 0 or self.total_requests_today <= 3:
-                logger.info(f"💾 Статистика сохранена: {self.total_requests_today} запросов")
         except Exception as e:
-            logger.error(f"❌ Ошибка сохранения статистики в {self.stats_file}: {str(e)}")
+            logger.error(f"❌ Ошибка сохранения в JSON: {str(e)}")
             logger.error(f"📋 Stack trace: {traceback.format_exc()}")
 
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
@@ -371,8 +412,8 @@ class RequestMonitor:
         else:
             return 'healthy'
 
-# Глобальный монитор запросов
-request_monitor = RequestMonitor()
+# Глобальный монитор запросов (будет инициализирован после Supabase)
+request_monitor = None
 
 # ============================================================================
 # NOTIFICATION MANAGER (Telegram + Email)
@@ -728,6 +769,27 @@ except ImportError:
 # ============================================================================
 PORT = int(os.getenv('PORT', 5000))
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ SUPABASE (для персистентного хранения статистики)
+# ============================================================================
+supabase_client = None
+if SUPABASE_AVAILABLE:
+    supabase_url = os.getenv('SUPABASE_URL')
+    supabase_key = os.getenv('SUPABASE_KEY')
+    if supabase_url and supabase_key:
+        try:
+            supabase_client: Client = create_client(supabase_url, supabase_key)
+            logger.info("✅ Supabase client инициализирован")
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации Supabase: {str(e)}")
+    else:
+        logger.warning("⚠️ SUPABASE_URL или SUPABASE_KEY не установлены - используется JSON файл")
+
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ REQUEST MONITOR (после Supabase)
+# ============================================================================
+request_monitor = RequestMonitor(supabase_client=supabase_client)
 
 # ============================================================================
 # КОНФИГУРАЦИЯ ПРОКСИ ДЛЯ WEBSHARE (решает проблему блокировки Railway IP)
