@@ -779,10 +779,13 @@ if SUPABASE_AVAILABLE:
     supabase_key = os.getenv('SUPABASE_KEY')
     if supabase_url and supabase_key:
         try:
+            # Создаем Supabase клиент БЕЗ дополнительных параметров
+            # Используем только URL и ключ
             supabase_client: Client = create_client(supabase_url, supabase_key)
             logger.info("✅ Supabase client инициализирован")
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации Supabase: {str(e)}")
+            logger.error(f"📋 Подробности: {traceback.format_exc()}")
     else:
         logger.warning("⚠️ SUPABASE_URL или SUPABASE_KEY не установлены - используется JSON файл")
 
