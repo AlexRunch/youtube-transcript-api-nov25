@@ -1005,7 +1005,9 @@ def health_check():
     return jsonify({
         "ok": True,
         "service": "YouTube Subtitles API",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "v2.0-debug-logging",  # Version marker to verify deployment
+        "stats_file": request_monitor.stats_file if request_monitor else None
     }), 200
 
 
