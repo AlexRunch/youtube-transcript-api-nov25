@@ -1344,6 +1344,14 @@ def get_subtitles_v2(video_id):
 
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else 'unknown'
 
+            # ✅ Логировать успешный запрос в статистику
+            error_tracker.reset_consecutive_failures()
+            request_monitor.log_youtube_request(
+                video_id, 'GET', lang=actual_language,
+                status='success',
+                response_time_ms=int(total_duration * 1000)
+            )
+
             return jsonify({
                 "success": True,
                 "status": "completed",
@@ -1355,6 +1363,12 @@ def get_subtitles_v2(video_id):
 
         except TranscriptsDisabled:
             logger.error(f"❌ Субтитры отключены для видео {video_id}")
+            request_monitor.log_youtube_request(
+                video_id, 'GET', lang=None,
+                status='error',
+                error_type='TranscriptsDisabled',
+                status_code=403
+            )
             return jsonify({
                 "success": False,
                 "status": "error",
@@ -1366,6 +1380,12 @@ def get_subtitles_v2(video_id):
 
         except VideoUnavailable:
             logger.error(f"❌ Видео недоступно: {video_id}")
+            request_monitor.log_youtube_request(
+                video_id, 'GET', lang=None,
+                status='error',
+                error_type='VideoUnavailable',
+                status_code=404
+            )
             return jsonify({
                 "success": False,
                 "status": "error",
