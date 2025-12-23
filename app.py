@@ -149,16 +149,21 @@ youtube_rate_limiter = None
 class RequestMonitor:
     """
     Мониторит количество запросов к YouTube и отслеживает ошибки.
+    Сохраняет статистику в JSON файл для персистентности между перезапусками.
     """
-    def __init__(self):
+    def __init__(self, stats_file='data/stats.json'):
         self.requests_per_minute = 0
         self.requests_per_hour = 0
         self.last_reset_minute = time.time()
         self.last_reset_hour = time.time()
         self.lock = threading.Lock()
         self.request_log = []  # Log последних 100 запросов
+        self.stats_file = stats_file
 
-        # Новое: отслеживание ошибок
+        # Создать директорию data/ если не существует
+        os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+
+        # Новое: отслеживание ошибок (будет загружено из файла)
         self.total_requests_today = 0
         self.successful_requests_today = 0
         self.failed_requests_today = 0
@@ -166,12 +171,64 @@ class RequestMonitor:
         self.languages_today = {}  # {en: count, ru: count, ...}
         self.daily_reset_time = self._get_reset_time()
 
+        # Загрузить статистику из файла
+        self._load_stats()
+
     def _get_reset_time(self):
         """Получить время когда нужно сбросить дневную статистику (00:00 UTC)"""
         now = datetime.now(timezone.utc)
         tomorrow = now + timedelta(days=1)
         reset_time = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
         return reset_time.timestamp()
+
+    def _load_stats(self):
+        """Загрузить статистику из JSON файла"""
+        try:
+            if os.path.exists(self.stats_file):
+                with open(self.stats_file, 'r') as f:
+                    data = json.load(f)
+
+                # Проверить что данные за сегодняшний день
+                saved_date = data.get('date', '')
+                today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+                if saved_date == today:
+                    # Данные актуальны - загружаем
+                    self.total_requests_today = data.get('total_requests', 0)
+                    self.successful_requests_today = data.get('successful', 0)
+                    self.failed_requests_today = data.get('failed', 0)
+                    self.error_breakdown = data.get('error_breakdown', {})
+                    self.languages_today = data.get('languages', {})
+                    self.daily_reset_time = data.get('daily_reset_time', self._get_reset_time())
+                    logger.info(f"✅ Статистика загружена из файла: {self.total_requests_today} запросов за сегодня")
+                else:
+                    # Данные устарели - начинаем с нуля
+                    logger.info(f"ℹ️ Статистика устарела ({saved_date} != {today}), начинаем новый день")
+                    self._reset_daily_stats()
+            else:
+                logger.info("ℹ️ Файл статистики не найден, начинаем с нуля")
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки статистики: {str(e)}")
+            logger.error(f"📋 Stack trace: {traceback.format_exc()}")
+
+    def _save_stats(self):
+        """Сохранить статистику в JSON файл"""
+        try:
+            data = {
+                'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+                'total_requests': self.total_requests_today,
+                'successful': self.successful_requests_today,
+                'failed': self.failed_requests_today,
+                'error_breakdown': self.error_breakdown,
+                'languages': self.languages_today,
+                'daily_reset_time': self.daily_reset_time,
+                'last_updated': time.time()
+            }
+
+            with open(self.stats_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения статистики: {str(e)}")
 
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
                            response_time_ms=0, error_type=None, status_code=None):
@@ -230,6 +287,9 @@ class RequestMonitor:
             if lang:
                 self.languages_today[lang] = self.languages_today.get(lang, 0) + 1
 
+            # Сохранить статистику в файл
+            self._save_stats()
+
             # ⚠️ Предупреждение если слишком много запросов
             if self.requests_per_minute > 10:
                 logger.warning(f"⚠️ ВНИМАНИЕ: {self.requests_per_minute} запросов в минуту! YouTube может заблокировать!")
@@ -244,6 +304,8 @@ class RequestMonitor:
         self.failed_requests_today = 0
         self.error_breakdown = {}
         self.languages_today = {}
+        # Сохранить сброшенную статистику в файл
+        self._save_stats()
 
     def get_stats(self):
         """Получить статистику"""

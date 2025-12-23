@@ -135,3 +135,6 @@ Thumbs.db
 
 # Railway
 .railway/
+
+# Statistics data (persisted between restarts)
+data/
