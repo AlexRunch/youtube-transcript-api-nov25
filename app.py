@@ -1118,17 +1118,21 @@ def get_subtitles():
 
             total_duration = time.time() - start_time
             logger.info(f"✅ Успешно получены {len(formatted_subtitles)} субтитров за {total_duration:.2f}сек (список: {list_duration:.2f}с, fetch: {fetch_duration:.2f}с, формат: {format_duration:.2f}с)")
+            logger.info(f"🔍 DEBUG: После успешного получения, video_id={video_id}, language={language}")
 
             # Получаем реальный язык который был использован
             actual_language = transcript.language_code if hasattr(transcript, 'language_code') else language
 
             # ✅ ПОСЛЕ успешного получения субтитров
+            logger.info(f"🔍 DEBUG: Перед вызовом error_tracker.reset_consecutive_failures()")
             error_tracker.reset_consecutive_failures()  # Сброс счетчика ошибок
+            logger.info(f"🔍 DEBUG: Перед вызовом request_monitor.log_youtube_request()")
             request_monitor.log_youtube_request(
                 video_id, 'POST', lang=language,
                 status='success',
                 response_time_ms=int(total_duration * 1000)
             )
+            logger.info(f"🔍 DEBUG: ПОСЛЕ вызова request_monitor.log_youtube_request()")
 
             return jsonify({
                 "success": True,
