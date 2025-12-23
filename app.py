@@ -1014,13 +1014,20 @@ def health_check():
 @app.route('/api/subtitles', methods=['POST'])
 def get_subtitles():
     """
-    Основной эндпоинт для получения субтитров
+    ⚠️ ЭКСПЕРИМЕНТАЛЬНЫЙ ENDPOINT - В РАЗРАБОТКЕ
+    ⚠️ НЕ ИСПОЛЬЗУЕТСЯ Chrome расширением
+
+    Основной endpoint для расширения: GET /api/subtitles/<video_id>
+
+    Этот endpoint поддерживает дополнительные возможности:
+    - Выбор конкретного языка субтитров
+    - Перевод субтитров на другой язык (функция работает, но требует тестирования)
 
     Request:
     {
         "videoId": "E19_kwN0f38",
         "language": "en",
-        "translateTo": null  // или "ru"
+        "translateTo": null  // или "ru" для перевода
     }
 
     Response:
@@ -1256,11 +1263,16 @@ def get_languages(video_id):
 @app.route('/api/subtitles/<video_id>', methods=['GET'])
 def get_subtitles_v2(video_id):
     """
-    GET эндпоинт для получения субтитров (для второго расширения).
-    Возвращает субтитры в формате: {index, start, end, dur, text}
+    ✅ ОСНОВНОЙ ENDPOINT - ИСПОЛЬЗУЕТСЯ CHROME РАСШИРЕНИЕМ
+
+    GET эндпоинт для получения субтитров.
+    Всегда возвращает ОРИГИНАЛЬНЫЙ язык видео (параметр lang игнорируется).
+    Простой, быстрый, без перевода.
+
+    Формат ответа: {index, start, end, dur, text}
 
     Query Parameters:
-    - lang: язык субтитров (обязательно)
+    - lang: язык субтитров (ИГНОРИРУЕТСЯ - всегда возвращается оригинальный язык)
     - format: формат ответа (json по умолчанию)
 
     Пример:
