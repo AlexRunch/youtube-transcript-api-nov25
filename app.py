@@ -33,9 +33,11 @@ from apscheduler.triggers.cron import CronTrigger
 # Supabase для персистентного хранилища статистики
 try:
     from supabase import create_client, Client
+    from httpx import Client as HTTPXClient
     SUPABASE_AVAILABLE = True
 except ImportError:
     SUPABASE_AVAILABLE = False
+    HTTPXClient = None
     print("⚠️ Supabase не установлен - используется локальный JSON файл")
 
 
@@ -779,9 +781,26 @@ if SUPABASE_AVAILABLE:
     supabase_key = os.getenv('SUPABASE_KEY')
     if supabase_url and supabase_key:
         try:
-            # Создаем Supabase клиент БЕЗ дополнительных параметров
-            # Используем только URL и ключ
-            supabase_client: Client = create_client(supabase_url, supabase_key)
+            # Создаем отдельный HTTP клиент для Supabase БЕЗ прокси
+            # Это предотвращает конфликт с YouTube прокси настройками
+            supabase_http_client = HTTPXClient(
+                timeout=30.0,
+                follow_redirects=True
+            )
+
+            # Создаем Supabase клиент с кастомным HTTP клиентом
+            from supabase.lib.client_options import ClientOptions
+            options = ClientOptions(
+                schema="public",
+                auto_refresh_token=True,
+                persist_session=True
+            )
+
+            supabase_client: Client = create_client(
+                supabase_url,
+                supabase_key,
+                options=options
+            )
             logger.info("✅ Supabase client инициализирован")
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации Supabase: {str(e)}")
