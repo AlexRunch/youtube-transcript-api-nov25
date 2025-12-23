@@ -1711,6 +1711,114 @@ def get_monitoring():
     }), 200
 
 
+@app.route('/api/telegram/webhook', methods=['POST'])
+def telegram_webhook():
+    """
+    🤖 Telegram Webhook для обработки команд бота
+
+    Поддерживаемые команды:
+    - /stats или /status - получить текущую статистику за день
+    - /help - список доступных команд
+    """
+    try:
+        if not notification_manager or not notification_manager.telegram_token:
+            return jsonify({"success": False, "error": "Telegram not configured"}), 400
+
+        data = request.get_json()
+
+        # Проверить что это сообщение
+        if 'message' not in data:
+            return jsonify({"success": True}), 200
+
+        message = data['message']
+        chat_id = message.get('chat', {}).get('id')
+        text = message.get('text', '').strip()
+
+        # Проверить что chat_id совпадает с настроенным
+        if str(chat_id) != notification_manager.telegram_chat_id:
+            logger.warning(f"⚠️ Получено сообщение от неизвестного chat_id: {chat_id}")
+            return jsonify({"success": True}), 200
+
+        logger.info(f"📥 Telegram команда: {text} от chat_id: {chat_id}")
+
+        # Обработка команд
+        if text in ['/stats', '/status']:
+            # Получить текущую статистику
+            stats = request_monitor.get_daily_stats()
+
+            # Сформировать отчет
+            top_langs = sorted(stats['languages'].items(), key=lambda x: x[1], reverse=True)[:3]
+            top_errors = sorted(stats['error_breakdown'].items(), key=lambda x: x[1], reverse=True)
+
+            langs_str = '\n'.join([f"   🌍 {lang}: {count}" for lang, count in top_langs]) if top_langs else "   Нет данных"
+            errors_str = '\n'.join([f"   ❌ {error}: {count}" for error, count in top_errors]) if top_errors else "   Нет ошибок ✅"
+
+            # Статус системы
+            if blockage_detector:
+                risk_score = blockage_detector.calculate_risk_score()
+                severity = blockage_detector.get_severity()
+                status_emoji = {
+                    'healthy': '🟢',
+                    'warning': '🟡',
+                    'critical': '🟠',
+                    'blocked': '🔴'
+                }.get(severity, '🟢')
+                status_text = severity.upper()
+            else:
+                risk_score = 0
+                status_emoji = '🟢'
+                status_text = 'HEALTHY'
+
+            current_time = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
+
+            message_text = f"""📊 <b>СТАТИСТИКА | {stats['date']}</b>
+<i>Запрос в {current_time}</i>
+
+<b>✅ СТАТИСТИКА:</b>
+   Всего: {stats['total_requests']}
+   Успешно: {stats['successful']} ({stats['success_rate']:.1f}%)
+   Ошибок: {stats['failed']}
+
+<b>🌍 ТОП ЯЗЫКИ:</b>
+{langs_str}
+
+<b>⚠️ ОШИБКИ:</b>
+{errors_str}
+
+<b>{status_emoji} YOUTUBE:</b> {status_text}
+   Risk Score: {risk_score}/100
+   {_get_recommendation(severity, risk_score)}"""
+
+            # Отправить ответ
+            notification_manager._send_telegram_background('stats_request', message_text)
+            logger.info(f"✅ Статистика отправлена в ответ на команду /stats")
+
+        elif text == '/help':
+            help_text = """🤖 <b>YouTube API Monitor Bot</b>
+
+<b>Доступные команды:</b>
+/stats - Получить текущую статистику за день
+/status - То же что и /stats
+/help - Показать это сообщение
+
+<b>Автоматические отчеты:</b>
+📊 Ежедневный отчет отправляется в 18:00 UTC"""
+
+            notification_manager._send_telegram_background('help', help_text)
+            logger.info(f"✅ Help отправлен в ответ на команду /help")
+
+        else:
+            # Неизвестная команда
+            logger.info(f"ℹ️ Неизвестная команда: {text}")
+
+        return jsonify({"success": True}), 200
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в telegram webhook: {str(e)}")
+        logger.error(f"📋 Stack trace: {traceback.format_exc()}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # ============================================================================
 # ERROR HANDLERS
 # ============================================================================
