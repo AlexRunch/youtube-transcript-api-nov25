@@ -37,12 +37,12 @@ Railway автоматически перезапустится после до�
 
 После перезапуска:
 1. Сделайте запрос к API (получите субтитры)
-2. Зайдите в Supabase → **Table Editor** → `daily_stats`
+2. Зайдите в Supabase → **Table Editor** → `daily_subtitle_api`
 3. Должна появиться строка с сегодняшней статистикой!
 
 ## Troubleshooting
 
-**Ошибка "relation daily_stats does not exist":**
+**Ошибка "relation daily_subtitle_api does not exist":**
 - Выполните SQL из `supabase_schema.sql`
 
 **Ошибка "Invalid API key":**

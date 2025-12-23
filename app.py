@@ -212,7 +212,7 @@ class RequestMonitor:
         # Попытка 1: Загрузить из Supabase
         if self.supabase:
             try:
-                response = self.supabase.table('daily_stats').select('*').eq('date', today).execute()
+                response = self.supabase.table('daily_subtitle_api').select('*').eq('date', today).execute()
                 if response.data and len(response.data) > 0:
                     data = response.data[0]
                     self.total_requests_today = data.get('total_requests', 0)
@@ -273,7 +273,7 @@ class RequestMonitor:
         # Попытка 1: Сохранить в Supabase (upsert - создать или обновить)
         if self.supabase:
             try:
-                self.supabase.table('daily_stats').upsert(data).execute()
+                self.supabase.table('daily_subtitle_api').upsert(data).execute()
                 # Логировать сохранение (но не на каждый запрос - слишком много логов)
                 if self.total_requests_today % 10 == 0 or self.total_requests_today <= 3:
                     logger.info(f"💾 Статистика сохранена в Supabase: {self.total_requests_today} запросов")
