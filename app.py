@@ -226,6 +226,7 @@ class RequestMonitor:
 
     def _save_stats(self):
         """Сохранить статистику в JSON файл"""
+        logger.info(f"🔍 DEBUG: _save_stats вызван - total={self.total_requests_today}, successful={self.successful_requests_today}, languages={self.languages_today}")
         try:
             data = {
                 'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
@@ -252,6 +253,7 @@ class RequestMonitor:
     def log_youtube_request(self, video_id, endpoint, lang=None, status='success',
                            response_time_ms=0, error_type=None, status_code=None):
         """Логировать запрос к YouTube"""
+        logger.info(f"🔍 DEBUG: log_youtube_request вызван - video_id={video_id}, lang={lang}, status={status}")
         with self.lock:
             now = time.time()
 
